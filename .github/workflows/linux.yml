@@ -1,0 +1,113 @@
+# Builds the Linux plugin on GitHub's machines and attaches it to a release.
+#
+# Runs when you push a tag that starts with "v" (e.g. git tag v0.1.0-beta1 && git push
+# origin v0.1.0-beta1), or by hand from the Actions tab. It does not run on pull
+# requests: the build downloads Nuke, and code from strangers' forks should never run
+# with that in reach.
+#
+# One-time setup: Settings > Secrets and variables > Actions > Variables > New variable
+#   NUKE_LINUX_URL = direct download link to the Linux Nuke .tgz (Nuke17.0v3-linux-x86_64.tgz)
+# Nuke itself is never stored in this repository - Foundry's licence does not allow
+# redistributing it. It is downloaded fresh for each build and thrown away afterwards.
+
+name: Linux build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to attach the zip to the release
+
+env:
+  NUKE_VERSION: "17.0"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Rocky Linux 9 is what Foundry supports for Nuke 15-17, and its stock compiler is
+    # GCC 11 - the same family Nuke itself is built with. Building on the runner's own
+    # Ubuntu would use GCC 13 and a newer glibc, and the plugin would likely refuse to
+    # load inside Nuke.
+    container: rockylinux:9
+    steps:
+      - name: Install build tools
+        run: dnf install -y gcc-c++ cmake make git tar gzip bzip2 xz unzip zip findutils which binutils
+
+      - uses: actions/checkout@v4
+
+      - name: Download and install Linux Nuke (headers and libDDImage only are used)
+        env:
+          NUKE_LINUX_URL: ${{ vars.NUKE_LINUX_URL }}
+        run: |
+          if [ -z "$NUKE_LINUX_URL" ]; then
+            echo "::error::Set the NUKE_LINUX_URL repository variable to the Linux Nuke .tgz download link."
+            exit 1
+          fi
+          mkdir -p /tmp/nuke-dl && cd /tmp/nuke-dl
+          curl -fL --retry 3 -o nuke.tgz "$NUKE_LINUX_URL"
+          tar xzf nuke.tgz && rm nuke.tgz
+          installer=$(ls *.run | head -1)
+          chmod +x "$installer"
+          "./$installer" --prefix=/opt --accept-foundry-eula
+          cd / && rm -rf /tmp/nuke-dl
+          root=$(dirname "$(dirname "$(dirname "$(ls /opt/Nuke*/include/DDImage/Iop.h | head -1)")")")
+          echo "NUKE_ROOT=$root" >> "$GITHUB_ENV"
+          echo "Nuke installed at $root"
+
+      - name: Build
+        run: |
+          cmake -B build -DNUKE_ROOT="$NUKE_ROOT" -DCMAKE_BUILD_TYPE=Release
+          cmake --build build -j"$(nproc)"
+
+      - name: Run the tests
+        run: |
+          mkdir -p /tmp/rp-test && cd /tmp/rp-test
+          "$GITHUB_WORKSPACE/build/rp_test_core" /tmp/rp-test
+          "$GITHUB_WORKSPACE/build/rp_test_library"
+
+      - name: Check every Nuke symbol the plugin uses exists in this Nuke
+        # A plugin built with the wrong C++ string ABI still compiles and links, and
+        # only fails when Nuke tries to load it ("undefined symbol ... input_longlabel").
+        # Asking the dynamic linker to resolve everything now catches that here instead
+        # of on a tester's machine.
+        run: |
+          LD_LIBRARY_PATH="$NUKE_ROOT" ldd -r build/NPaintShop.so 2>&1 | tee /tmp/ldd.txt || true
+          if grep "undefined symbol" /tmp/ldd.txt | grep -q "NPaintShop.so"; then
+            echo "::error::NPaintShop.so needs symbols this Nuke does not have - ABI mismatch."
+            exit 1
+          fi
+
+      - name: Package
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          name="NPaintShop-${tag}-Nuke${NUKE_VERSION}-linux64"
+          mkdir -p "dist/NPaintShop"
+          cp build/NPaintShop.so python/menu.py README.md dist/NPaintShop/
+          [ -f LICENSE ] && cp LICENSE dist/NPaintShop/
+          (cd dist && zip -r "$name.zip" NPaintShop)
+          echo "ZIP=dist/$name.zip" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-build
+          path: ${{ env.ZIP }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-build
+      - name: Attach to the release (created as a pre-release if it does not exist yet)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --prerelease --title "NPaintShop $tag" --notes "Beta build."
+          gh release upload "$tag" NPaintShop-*.zip --clobber

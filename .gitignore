@@ -1,0 +1,17 @@
+# Build output: compiled per machine and per Nuke version, never committed.
+build/
+out/
+.vs/
+CMakeUserPresets.json
+
+# Left in the project root by the test runs (rp_test_core writes its scratch
+# files to the current directory). Real brush sets live elsewhere.
+/*.abr
+/canvas.rpt
+
+# Paint caches, wherever a test or a script happens to drop them.
+*.rpt
+
+# Foundry's NDK headers and libraries are licensed to whoever installed Nuke and
+# must not be redistributed. The build finds them under the Nuke install.
+DDImage/
