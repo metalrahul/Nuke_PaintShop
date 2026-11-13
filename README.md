@@ -1,19 +1,30 @@
-# RasterPaint for Nuke
+# NPaintShop for Nuke
 
-A raster paint node. Strokes are baked into pixels as you draw, the way Photoshop
-does it, instead of being stored and re-rendered like RotoPaint. A shot with ten
-thousand strokes renders as fast as one with ten.
+A raster paint node for Nuke. Strokes are baked into pixels as you draw, the way
+Photoshop does it, instead of being stored and re-rendered like RotoPaint. A shot with
+ten thousand strokes renders as fast as one with ten.
 
-- Paint, erase and clone stamp, cloning across time or from a second input
-- Round brush (size, hardness) or sampled tips loaded from Photoshop `.abr` files
-- Layers, each with opacity, a blend mode and visibility
-- Photoshop-style brush dynamics: shape, scattering and transfer
-- Opacity and flow that behave like Photoshop's, plus spacing and tablet pressure
+- Paint, erase, clone stamp and smudge, cloning across time or from a second input
+- Round brush or sampled tips loaded from Photoshop `.abr` files, with an installable
+  brush library
+- Photoshop-style brush dynamics: shape, scattering and transfer, with tablet pressure
+- Layers, each with opacity, one of fourteen blend modes, visibility and lock
 - A viewer toolbar, a brush picker with thumbnails, and a live stroke preview
 - Undo and redo through Nuke's own Ctrl+Z
-- One layer for all frames, or a separate layer per frame
+- One layer for all frames, or separate paint per frame
+- A "paint only" output, so the paint can be rendered out and comped by people who do
+  not have the plugin
 
-## Requires a commercial Nuke licence
+> **Beta.** Tested on Windows with Nuke 17.0v3. The Linux build is produced
+> automatically and has not yet been tested inside Nuke on Linux - reports welcome.
+
+## Requirements
+
+- **Nuke 17.0**, Windows or Linux. An NDK plugin only loads in the Nuke version it was
+  built for, so these builds will not load in Nuke 16 or earlier.
+- **A commercial Nuke, NukeX or Nuke Studio licence.** See below.
+
+### Nuke Indie and Non-commercial cannot load it
 
 NDK plugins do not load in **Nuke Indie** or **Nuke Non-commercial**. Foundry's flavour
 comparison lists "NDK / C++ SDK Support" and "Third Party / Custom C++ node / plug-in
@@ -21,57 +32,67 @@ support" as *No* for both, and the Indie FAQ states that "Custom C++ Compiled no
 not work or load correctly in Nuke Indie." The licence decides this, not the installed
 build, so the same install running under a commercial licence is fine.
 
-| Licence | Can load this plugin | Custom OFX plugins |
-| --- | --- | --- |
-| Nuke / NukeX / Nuke Studio (commercial) | Yes | Yes |
-| Nuke Indie | No | Yes |
-| Nuke Non-commercial | No | No |
-
-To run it on Indie it would have to be rewritten as an **OFX** plugin. `src/core` has no
-Nuke dependency and would carry over unchanged; only `src/nuke/RasterPaint.cpp` would be
-replaced. The open question to settle first is whether Nuke's OFX host implements viewer
-interacts (pen events and overlay drawing) — OFX specifies them, but Nuke's support for
-them was not confirmed. Without that there is no in-viewer painting on Indie.
-
-## Status: read this first
-
-| Part | State |
+| Licence | Can load this plugin |
 | --- | --- |
-| `src/core` (canvas, brush engine, `.abr` reader, undo, file format) | Compiled and tested here: unit tests pass, clean under AddressSanitizer and UBSan |
-| `src/nuke/RasterPaint.cpp` (the Nuke node) | **Not compiled against the real NDK and never run in Nuke.** No Nuke install was available. The NDK calls it uses were checked against Foundry's NDK reference, and the file passes a syntax check against stand-in headers |
+| Nuke / NukeX / Nuke Studio (commercial) | Yes |
+| Nuke Indie | No |
+| Nuke Non-commercial | No |
 
-Expect to fix a few things on the first real build. The places most likely to
-need attention are listed under "What to check first in Nuke".
+## Install
 
-## Build
+Download the zip for your platform from the
+[Releases](https://github.com/metalrahul/Nuke_PaintShop/releases) page:
 
-Needs CMake 3.16+ and the compiler Foundry lists for your Nuke version, because NDK
-plugins are ABI-sensitive: **Visual Studio 2022** for Nuke 16 and 17.
+- `NPaintShop-<version>-Nuke17.0-win64.zip` for Windows
+- `NPaintShop-<version>-Nuke17.0-linux64.zip` for Linux
 
-`NUKE_ROOT` must be the exact install folder, patch number included — a path that does
-not exist is the usual cause of a `could not find DDImage` error, so check the folder
-name first:
+Each contains the plugin, `menu.py`, this README and the licence.
 
-```
-cmake -B build -DNUKE_ROOT="C:/Program Files/Nuke17.0v3"
-cmake --build build --config Release
-ctest --test-dir build        # core tests, no Nuke needed
-```
+### Windows
 
-On macOS point it at `<...>/NukeXX.YvZ.app/Contents/MacOS`. Without `-DNUKE_ROOT` only
-the core tests are built.
+1. Close Nuke.
+2. Open your `.nuke` folder: `C:\Users\<your name>\.nuke` (paste `%USERPROFILE%\.nuke`
+   into the Explorer address bar).
+3. Copy `NPaintShop.dll` into it.
+4. **If you have no `menu.py` there**, copy the one from the zip. **If you already have
+   one, do not overwrite it** - open it and add these two lines at the end:
 
-Copy the built `RasterPaint.dll` (in `build/Release` on Windows) or `RasterPaint.so` /
-`.dylib` and `python/menu.py` into your `.nuke` folder, or any folder on `NUKE_PATH`.
-The node appears under Draw > RasterPaint.
+   ```python
+   import nuke
+   nuke.menu("Nodes").addCommand("Draw/NPaintShop", "nuke.createNode('NPaintShop')")
+   ```
 
-Options, all optional:
+5. Start Nuke. The node is under **Draw > NPaintShop**, or press Tab and type
+   `NPaintShop`.
 
-- `-DRP_DDIMAGE=<path>` if the DDImage library is somewhere the build does not look.
-- `-DRP_USE_NUKE_CMAKE=ON` to link through Nuke's own `NukeConfig.cmake`. Off by
-  default because several Nuke releases ship that file in the install root instead of
-  `cmake/`, which makes it compute the wrong import prefix (Foundry issue 502250).
-- `-DRP_OLD_ABI=ON` for Nuke 14 and older on Linux (old libstdc++ string ABI).
+### Linux
+
+1. Close Nuke.
+2. Copy the plugin into your `.nuke` folder:
+
+   ```bash
+   mkdir -p ~/.nuke
+   cp NPaintShop.so ~/.nuke/
+   ```
+
+3. **If you have no `~/.nuke/menu.py`**, copy the one from the zip. **If you already
+   have one, do not overwrite it** - add the two lines shown in the Windows steps to the
+   end of it.
+4. Start Nuke. The node is under **Draw > NPaintShop**, or press Tab and type
+   `NPaintShop`.
+
+### For a studio or a shared install
+
+Instead of each artist's `.nuke`, put `NPaintShop.dll` / `NPaintShop.so` and `menu.py`
+in any folder on `NUKE_PATH`. Brush sets placed in an `NPaintShop/brushes` folder on
+`NUKE_PATH` appear for everyone (see Brush library).
+
+### If the node does not appear
+
+- Check the Nuke version is 17.0 and the licence is commercial (see Requirements).
+- Check the plugin file is directly in `.nuke`, not in a subfolder from the zip.
+- Look in Nuke's Script Editor or terminal for a line mentioning `NPaintShop` - it
+  usually says why it did not load. Please include it when reporting a problem.
 
 ## Use
 
@@ -83,111 +104,52 @@ Open the node's control panel and paint in the 2D viewer.
 | Ctrl+click | Set the clone source. The next clone stroke fixes the offset |
 | Shift+drag left/right | Resize the brush |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo strokes (also the Undo / Redo buttons) |
-| `Alt+B` / `Alt+E` / `Alt+S` | Brush / eraser / clone stamp |
+| `Alt+B` / `Alt+E` / `Alt+S` / `Alt+U` | Brush / eraser / clone stamp / smudge |
 | `Alt+C` | Pick the colour under the cursor |
+| `Alt+[` / `Alt+]` | Smaller / larger brush |
 | `Alt+M` | Toggle the brush menu |
 | `Alt+L` | Toggle the layer list |
-| `Alt+[` / `Alt+]` | Shrink / grow the brush |
 
-Drag the grip in the brush menu's bottom-right corner to make the grid bigger or
-smaller, up to 24 by 24 cells.
+The same list is on the Settings tab under **shortcuts**.
 
 Every shortcut uses Alt deliberately. Nuke's 2D viewer already binds the bare letters
 this node would otherwise want - `p` pauses the viewer, `b` shows the blue channel, `l`
-plays forward, `i` marks an in point, and `[` and `]` toggle the toolbars - so taking
-them would break the viewer. Alt is nearly free: Nuke uses only Alt+G, I, O, P, U, W
-and Z, none of which are used here.
+plays forward, `i` marks an in point, and `[` and `]` toggle the toolbars.
 
-The eyedropper button on the toolbar arms a pick: the next click samples a colour and
-disarms it. Either way the colour comes from what you can see - the input with every
-visible layer composited on top - and the current colour shows as a chip on that button.
-Alt is left alone, since the viewer uses it to pan.
-
-The toolbar down the left of the viewer does the same things, and stays a constant size
-as you zoom. The grid button opens a picker showing a thumbnail of every tip in the
-loaded `.abr`; click one to select it. Bottom left is a live swatch of the current
-brush, rendered by the paint engine itself rather than approximated, so it always shows
-what a stroke will actually lay down.
-
-The NDK has no API for adding a native viewer toolbar, so this one is drawn in OpenGL
-and hit-tested by the plugin. Clicking it never paints.
-
-To use Photoshop brushes, pick an `.abr` in **brush file**. Its brushes appear in the
-**brush** menu after `round`, under their real names.
-
-With **use brush file settings** on (the default), picking one also takes its size,
-spacing, hardness, angle, roundness and dynamics from the file, so a brush behaves as it
-does in Photoshop rather than just supplying a shape. Turn it off to keep your own
-settings and use the file for tip shapes only.
+The toolbar down the left of the viewer does the same things and stays a constant size
+as you zoom. The grid button opens a picker with a thumbnail of every brush tip; drag
+its bottom-right grip to resize it. Bottom left is a live swatch of the current brush,
+rendered by the paint engine itself, so it shows exactly what a stroke will lay down.
+Clicking the toolbar never paints.
 
 **opacity** caps how opaque one stroke can get, however much it overlaps itself.
 **flow** is how quickly each dab builds towards that cap.
 
-## Layers
+## Brushes
 
-Paint goes onto the selected layer; the stack composites bottom to top over the node's
-input. The **Layers** tab holds the stack: name, opacity, blend mode, visibility, lock,
-and buttons to add, duplicate, delete, reorder, merge down and flatten. The layer
-selector is also on the main tab, and the viewer shows the stack top right - click a row
-to select it, click its box to toggle visibility, `Alt+L` to hide the list.
+Pick a Photoshop `.abr` in **brush file** (Settings tab). Its brushes appear in the
+**brush** menu after `round`, under their real names. With **use brush file settings**
+on (the default), picking one also takes its size, spacing, hardness, angle, roundness
+and dynamics from the file, so a brush behaves as it does in Photoshop. Turn it off to
+use the file for tip shapes only.
 
-Fourteen blend modes: normal, multiply, screen, overlay, darken, lighten, colour dodge,
-colour burn, hard light, soft light, difference, exclusion, plus and minus. Normal,
-multiply, screen, plus, minus, difference, darken and lighten behave sensibly on
-over-range (HDR) values; the rest are defined against a 0..1 range and will do odd
-things above 1, which is inherent to the formulas rather than a bug.
+### Brush library
 
-Adding, deleting, reordering and merging are undoable with Ctrl+Z, the same as strokes.
-A node always keeps at least one layer. **Merge down** covers every frame the two layers
-hold paint on, not only the frame on screen.
+**Install** (Settings tab) copies the loaded `.abr` into your brush library, and from
+then on it is one pick away in the **brush set** menu on the main tab. **Remove**
+deletes the selected set from your library.
 
-Each layer keeps its own sidecar files, named by a layer id that never changes, so
-reordering never rewrites anything:
+Your library lives in `~/.nuke/NPaintShop/brushes` (`%USERPROFILE%\.nuke\...` on
+Windows), or wherever the `NPAINTSHOP_BRUSHES` environment variable points. Sets in an
+`NPaintShop/brushes` folder anywhere on `NUKE_PATH` are listed too, so a studio can
+publish brushes to everyone; those cannot be removed from inside Nuke.
 
-```
-<paint dir>/paint.L01.rpt        layer id 1, all frames
-<paint dir>/paint.L02.0101.rpt   layer id 2, frame 101
-```
+### Brush presets
 
-The stack's metadata - names, opacity, blend, visibility - lives in a hidden knob in the
-`.nk`, so it travels with the script while the pixels stay beside it. Paint written
-before layers existed loads into the bottom layer. Files belonging to deleted layers are
-removed when you next save.
-
-Clone samples the input with every *other* visible layer composited onto it, frozen for
-the stroke. The active layer's own blend mode is not applied to the clone source.
-
-**brush blend** sets how a stroke combines with what is already on its layer - multiply
-to shade, screen to lift, and so on. That is separate from the layer's own blend mode,
-which controls how the whole layer sits over everything below; the two stack. Erase
-ignores it. On an empty part of a layer every mode gives the plain colour, since
-blending against nothing is just the source.
-
-## Brush presets
-
-**Save preset** stores every brush and dynamics setting under a name, along with the
-loaded `.abr` and the selected tip. Picking one from the menu applies it. Presets live
-in `~/.nuke/RasterPaint.presets` (`%USERPROFILE%\.nuke\...` on Windows), so they are
-shared by every script rather than trapped in one node, and the file is written through
-a temp file so a failure cannot truncate it.
-
-**Reset brush** puts every brush and dynamics setting back to its default. Colour, the
-loaded brush file and the layer stack are left alone.
-
-## Cloning
-
-**clone from** picks which image the clone tool copies: `A` is this node's input, `B` is
-the second input, so a cleanplate or another element can be painted in. With nothing
-connected to B it falls back to A.
-
-**time offset** shifts the clone source in time - `-1` clones from the previous frame,
-which is how a rig gets painted out using a frame where it isn't there. Clone pixels are
-baked into the canvas as you paint rather than re-rendered, so the offset is read once
-at stroke time and the result does not change if the source does later.
-
-Either way the source is the chosen image with every *other* visible layer composited
-onto it, frozen for the stroke, with this layer's pre-stroke pixels on top - which is
-what stops a clone stroke smearing its own output.
+**Save preset** (Settings tab) stores every brush and dynamics setting under a name,
+along with the loaded `.abr` and the selected tip. Pick a preset from the menu on the
+main tab to apply it. Presets live in `~/.nuke/NPaintShop.presets`, shared by every
+script. **Reset brush** puts every brush and dynamics setting back to its default.
 
 ## Brush dynamics
 
@@ -196,134 +158,192 @@ random reduction), a **control** (off, fade over N dabs, or pen pressure) and a
 **minimum** that floors the result.
 
 - **Brush tip shape** - angle and roundness, flip x/y.
-- **Shape dynamics** - size, angle and roundness jitter. Angle can also be set to
-  `direction`, which turns the tip to follow the stroke; with a flat tip that gives a
-  calligraphic nib.
-- **Scattering** - throw each dab off the stroke by up to N brush diameters, across the
-  stroke or both axes, with `count` dabs per spacing step.
+- **Shape dynamics** - size, angle and roundness jitter. Angle can also follow the
+  stroke direction, which with a flat tip gives a calligraphic nib.
+- **Scattering** - throw each dab off the stroke by up to N brush diameters, with
+  `count` dabs per spacing step.
 - **Transfer** - opacity and flow jitter.
 
 Every stroke replays the same random sequence from the **random seed**, so a stroke you
-like is reproducible; change the seed for a different pattern. A size fade that reaches
-zero stops the stroke rather than trailing sub-pixel specks.
+like is reproducible.
 
-Opacity jitter can only ever lighten a dab, never darken what is already down: the
-engine keeps the highest alpha reached at each pixel, so a faint dab landing on a solid
-one leaves it alone.
+## Layers
 
-## How it stays fast
+Paint goes onto the selected layer; the stack composites bottom to top over the node's
+input. The **Layers** tab holds the stack: name, opacity, blend mode, visibility, lock,
+and buttons to add, duplicate, delete, reorder, merge down and flatten. The viewer shows
+the stack top right - click a row to select it, click its box to toggle visibility.
 
-- **Sparse tiles.** The canvas is 128x128 float RGBA tiles, allocated only where
-  there is paint. Tiles that are erased back to empty are freed.
-- **Rendering is a lookup.** `engine()` passes untouched rows straight through
-  without copying. Painted rows are one "over" of the tile on the input.
-- **No stroke replay.** Opacity is handled by blending each dab against a snapshot of
-  the tile from before the stroke, with a per-stroke coverage mask. The same snapshots
-  are the undo history, so undo costs no extra work while painting.
-- **Brush tips are mip-mapped** once when the `.abr` loads, so a 2500 px tip painted
-  at 40 px is still one bilinear lookup per pixel.
-- **Clone reads the input once per tile** per stroke, not once per dab.
+Fourteen blend modes: normal, multiply, screen, overlay, darken, lighten, colour dodge,
+colour burn, hard light, soft light, difference, exclusion, plus and minus. Normal,
+multiply, screen, plus, minus, difference, darken and lighten behave sensibly on
+over-range (HDR) values; the rest are defined for 0-1 and do odd things above 1, which
+is inherent to the formulas.
 
-Measured on the core alone, single thread, 2-core cloud machine (your workstation
-will be faster). Each "mouse move" is about 10 px of travel:
+**brush blend** sets how a stroke combines with what is already on its layer. That is
+separate from the layer's own blend mode, and the two stack.
 
-| Brush | Time per mouse move |
-| --- | --- |
-| Round 50 px, 10% spacing | 0.13 ms |
-| Round 300 px, 10% spacing | 0.49 ms |
-| Sampled 1024 px tip at 300 px | 0.9 ms |
-| Clone 300 px | 0.67 ms |
+## Cloning
 
-These numbers cover stamping only. In Nuke, the viewer refresh after each move also
-re-evaluates whatever is downstream of the node, and that will dominate.
+**clone from** picks the image the clone tool copies: `A` is this node's input, `B` the
+second input, so a cleanplate can be painted in. **time offset** shifts the source in
+time - `-1` clones from the previous frame, which is how a rig gets painted out using a
+frame where it isn't there. The source is read once at stroke time and baked in, so the
+result does not change if the source does later.
 
-## Proxy and downres
+## Rendering the paint for someone without the plugin
 
-The canvas always holds **full-resolution** pixels, whatever scale the viewer is at. On
-the way out the stack is sampled scaled, so paint appears in the right place and at the
-right size with proxy on or off, and switching between them changes nothing but
-sharpness.
+Set **output** (main tab) to **paint only**. The node then outputs every visible layer
+composited on transparent black, premultiplied, with alpha. Put a Write node after it
+and render an EXR; anyone can Merge (over) that onto the plate and get the same picture
+without NPaintShop installed.
 
-Painting while proxied is refused rather than half-supported. The reason is specific to
-a raster paint node: clone and smudge sample the image, and at proxy scale that means
-baking proxy-resolution pixels permanently into full-resolution paint. RotoPaint avoids
-the problem by storing vector strokes and re-rasterising them; a raster node cannot.
-A warning is honest, silently baking soft pixels is not.
+That match is exact for layers in the normal blend mode. A layer set to multiply, screen
+and so on is defined by what lies under it, plate included, so in paint-only output it
+blends only with the layers below it.
+
+## Settings tab
+
+- **Brush library, presets** - as described above.
+- **Storage** - the paint directory, **Save paint now** and **Reload from disk**.
+- **Memory** - limits that matter on very large plates:
+  - **undo memory** - megabytes of undo history (default 1024).
+  - **clone cache** - megabytes of clone source kept in memory (default 512).
+  - **other frames** - megabytes of paint kept for frames you are not on, in
+    single-frame mode (default 2048). Past it, the furthest frames are written to disk
+    and released; they reload when you go back. 0 never releases unsaved frames.
+  - **in use** - what the node is holding right now.
+  - **Free memory** - empties the clone cache and undo history and releases other
+    frames. Paint is not lost, but earlier strokes can no longer be undone.
+
+  These limits describe the machine rather than the shot, so they are not saved in the
+  script. Set `NPAINTSHOP_UNDO_MB`, `NPAINTSHOP_CLONE_CACHE_MB` or `NPAINTSHOP_FRAME_MB`
+  to change the defaults.
+- **Performance** - **last stroke** reports where the time went on the last stroke.
+  Please include it when reporting a slow brush.
+
+### Large plates on 16 GB machines
+
+A fully painted layer on a 16k latlong is about 2 GB, and paint is your work, not a
+cache, so it is never thrown away. Paint is sparse, so a few retouches cost far less.
+With 16 GB of RAM and very large plates, lower Nuke's own cache (Preferences >
+Performance > Caching) to around 40%, keep the clone cache at 512 MB, and watch the
+**in use** line.
 
 ## Where the paint is stored
 
-Paint lives in sidecar files, not in the `.nk`:
+Paint lives in sidecar files next to the script, not in the `.nk`:
 
 ```
-<script folder>/RasterPaint/<script name>_<node name>/paint.rpt        (all frames)
-<script folder>/RasterPaint/<script name>_<node name>/paint.0101.rpt   (single frame)
+<script folder>/RasterPaint/<script name>_<node name>/paint.L01.rpt        all frames
+<script folder>/RasterPaint/<script name>_<node name>/paint.L01.0101.rpt   frame 101
 ```
+
+(The folder keeps its original `RasterPaint` name so scripts from before the rename
+still find their paint.)
 
 Files are written when the script is saved or autosaved, or with **Save paint now**.
-They are lossless and compressed (a test canvas of 2.8 MB in memory saved as 0.41 MB).
-Before the script has a name, paint goes to a temp folder and is copied next to the
-script on the first save. "Save As" and renaming the node copy the files across.
+They are lossless and compressed. Before the script has a name, paint goes to a temp
+folder and is copied next to the script on the first save. "Save As" and renaming the
+node copy the files across.
 
-Send the `RasterPaint` folder along with the script to the farm. Copy-pasting the
-node does not copy its paint.
+**Send the `RasterPaint` folder along with the script** to the farm or to another
+artist. Copy-pasting the node does not copy its paint.
+
+## Proxy
+
+The canvas always holds full-resolution pixels; with proxy on, paint is displayed
+scaled to the right place and size. Painting while proxied is refused, because clone
+and smudge would bake proxy-resolution pixels permanently into full-resolution paint.
 
 ## Limits
 
-- `.abr`: what is read from the file is the brush list with names, tip bitmaps, size,
-  spacing, hardness, angle, roundness, flips, and the shape, scattering and transfer
-  dynamics. Texture, Dual Brush, Colour Dynamics, Brush Pose and the mixer-brush
-  settings (wetness, mix) are ignored. Dynamics driven by pen tilt or the stylus wheel
-  fall back to off, since Nuke does not report those. Computed brushes have no bitmap
-  and load as round-brush presets, which is exactly what they are. Files in the older
-  v1/v2 format carry no settings beyond spacing, so those brushes come in at defaults.
-- No Texture, Dual Brush, Colour Dynamics, Wet Edges, Noise or Airbrush build-up.
-- No smudge, blur or sharpen brushes yet.
-- Layers have no masks, groups or adjustment layers, and cannot be dragged to reorder -
-  use Move up / Move down.
-- No rotation or roundness for tips, no smudge / blur / dodge tools, no blend modes.
-- Painted and cloned pixels get alpha 1, like RotoPaint. Turn off **paint into
-  alpha** to pass the input alpha through.
-- Proxy / downrez mode and non-square pixels are not handled: paint coordinates are
-  full-resolution pixels.
-- Clone offsets are whole pixels (sharp, no resampling). The source is the image as
-  it was before the stroke started, as in Photoshop.
-- The undo history is kept in memory (1 GB budget) and is lost on reload.
+- `.abr`: brush names, tip bitmaps, size, spacing, hardness, angle, roundness, flips,
+  and the shape, scattering and transfer dynamics are read. Texture, Dual Brush, Colour
+  Dynamics, Brush Pose, Wet Edges, Noise, Airbrush and mixer-brush settings are not.
+  Dynamics driven by pen tilt or the stylus wheel fall back to off, since Nuke does not
+  report those.
+- No blur, sharpen or dodge/burn brushes yet.
+- Layers have no masks, groups or adjustment layers, and are reordered with Move up /
+  Move down rather than by dragging.
+- Clone offsets are whole pixels (sharp, no resampling).
+- The undo history is kept in memory and is lost when the script is reloaded.
+- Very large brushes on very large plates (a 2000 px brush on a 16k latlong) can still
+  lag. This is being worked on.
 
-## What to check first in Nuke
+## Reporting problems
 
-1. **It compiles.** Signatures were taken from the NDK reference, but small
-   differences between Nuke versions are likely.
-2. **`paint_dir` expansion.** The code assumes `File_knob` hands the Op the path with
-   its TCL expression already evaluated. If paint always lands in the temp folder,
-   that assumption is wrong and `paintDir()` needs to evaluate the knob itself.
-3. **Viewer refresh while dragging** (`touch()`). It bumps a hidden knob and calls
-   `asapUpdate()`. If the viewer lags or does not refresh, this is the place.
-4. **Ctrl+Z** (`commitHistory()` / `syncHistory()`). It relies on Nuke calling
-   `knob_changed` for the hidden `stroke_index` knob when undoing.
-5. **Saving on script save** (`GlueKnob::to_script`). Confirm `.rpt` files appear when
-   you save. **Save paint now** works regardless.
-6. **Clone from the input** (`fetchInputTile()`). It pulls input pixels on the UI
-   thread, outside a normal render. Test on a heavy tree.
-7. **Modifier keys.** Ctrl+click and Shift+drag may collide with viewer shortcuts on
-   your platform. They are a few lines in `handle()`.
-8. **Tablet pressure.** `ViewerContext::pressure()` has no documented range. The code
-   treats values outside (0, 1] as "no pressure".
+Please open an issue on the [Issues](https://github.com/metalrahul/Nuke_PaintShop/issues)
+page with:
+
+- your Nuke version (e.g. 17.0v3) and operating system,
+- what you did and what happened,
+- for slowness, the **last stroke** and **in use** lines from the Settings tab,
+- for crashes, whether it happens again and what you were doing just before.
+
+## Build from source
+
+Needs CMake 3.16+ and the compiler Foundry lists for your Nuke version, because NDK
+plugins are ABI-sensitive:
+
+- **Windows:** Visual Studio 2022.
+- **Linux:** GCC 11 on Rocky Linux 9 (what Foundry builds Nuke 15-17 with). Building on
+  a newer distribution or compiler can produce a plugin Nuke refuses to load.
+
+`NUKE_ROOT` must be the exact install folder, patch number included:
+
+```
+cmake -B build -DNUKE_ROOT="C:/Program Files/Nuke17.0v3"
+cmake --build build --config Release
+ctest --test-dir build -C Release      # core tests, no Nuke needed
+```
+
+On Linux, e.g. `-DNUKE_ROOT=/opt/Nuke17.0v3 -DCMAKE_BUILD_TYPE=Release`. Without
+`-DNUKE_ROOT` only the core tests are built.
+
+The plugin is `build/Release/NPaintShop.dll` on Windows and `build/NPaintShop.so` on
+Linux. On Windows the build also writes `NPaintShop.pdb`; keep it alongside each
+release you make, since crash dumps can only be read against the matching one.
+
+Options, all optional:
+
+- `-DRP_DDIMAGE=<path>` if the DDImage library is somewhere the build does not look.
+- `-DRP_USE_NUKE_CMAKE=ON` to link through Nuke's own `NukeConfig.cmake`.
+- `-DRP_OLD_ABI=ON` for Nuke 14 and older on Linux (old libstdc++ string ABI).
+
+The Linux release is built by `.github/workflows/linux.yml` in a Rocky Linux 9
+container. It downloads Nuke at build time from the link in the `NUKE_LINUX_URL`
+repository variable; Nuke itself is never stored in this repository.
+
+`RasterPaint.tcl` is only needed by scripts saved before the node was renamed: put it
+next to the plugin and those scripts load as before.
 
 ## Layout
 
 ```
-src/core/Canvas.*        sparse tiled canvas, row compositing, file format
-src/core/Brush.*         dab rasteriser (rotation, roundness), .abr reader
-src/core/Descriptor.*    Photoshop descriptor reader, for .abr brush settings
-src/core/PaintEngine.*   strokes, dynamics, clone, erase, undo/redo
-src/core/Preview.*       stroke swatch and tip thumbnails, run through the real engine
-src/nuke/Overlay.h       viewer toolbar, brush picker, swatch, cursor preview
-src/nuke/RasterPaint.cpp the Nuke node
-tests/test_core.cpp      unit tests and benchmark for src/core
-src/core/Blend.*         blend modes and premultiplied compositing
-tests/test_overlay.cpp   overlay layout and hit-testing
-tests/test_layers.cpp    layer metadata round trip and file naming
-                         (both need NUKE_ROOT and are not built by default - build the
-                         rp_test_overlay / rp_test_layers targets)
-python/menu.py           menu entry
+src/core/Canvas.*         sparse tiled canvas, row compositing, file format
+src/core/Brush.*          dab rasteriser, .abr reader
+src/core/Descriptor.*     Photoshop descriptor reader, for .abr brush settings
+src/core/PaintEngine.*    strokes, dynamics, clone, smudge, erase, undo/redo
+src/core/Blend.h          blend modes and premultiplied compositing
+src/core/Preview.*        stroke swatch and tip thumbnails, run through the real engine
+src/nuke/NPaintShop.cpp   the Nuke node
+src/nuke/Overlay.h        viewer toolbar, brush picker, swatch, cursor preview
+src/nuke/BrushLibrary.h   installed brush sets
+tests/test_core.cpp       unit tests and benchmark for src/core
+tests/test_library.cpp    brush library
+tests/test_overlay.cpp    overlay layout and hit-testing  (need NUKE_ROOT; build the
+tests/test_layers.cpp     layer metadata round trip        rp_test_* targets by name)
+python/menu.py            menu entry
 ```
+
+## Licence
+
+MIT - see [LICENSE](LICENSE). Nuke and the NDK are Foundry's and are not part of this
+repository.
+
+## Credits
+
+Rahul Venugopal - [www.rkvfx.com](https://www.rkvfx.com)
+
+Built using Claude Code.
