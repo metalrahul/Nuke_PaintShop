@@ -7,7 +7,8 @@ ten thousand strokes renders as fast as one with ten.
 - Paint, erase, clone stamp and smudge, cloning across time or from a second input
 - Round brush or sampled tips loaded from Photoshop `.abr` files, with an installable
   brush library
-- Photoshop-style brush dynamics: shape, scattering and transfer, with tablet pressure
+- Photoshop-style brush dynamics: shape, scattering, transfer, colour dynamics, noise
+  and wet edges, with tablet pressure
 - Layers, each with opacity, one of fourteen blend modes, visibility and lock
 - A viewer toolbar, a brush picker with thumbnails, and a live stroke preview
 - Undo and redo through Nuke's own Ctrl+Z
@@ -102,7 +103,9 @@ Open the node's control panel and paint in the 2D viewer.
 | --- | --- |
 | Drag | Paint with the current tool |
 | Ctrl+click | Set the clone source. The next clone stroke fixes the offset |
-| Shift+drag left/right | Resize the brush |
+| Shift+drag | Straight stroke, locked horizontal or vertical (whichever way you first move) |
+| Shift+click | Straight line from where the last stroke ended to the click |
+| Ctrl+Shift+drag left/right | Resize the brush |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo strokes (also the Undo / Redo buttons) |
 | `Alt+B` / `Alt+E` / `Alt+S` / `Alt+U` | Brush / eraser / clone stamp / smudge |
 | `Alt+C` | Pick the colour under the cursor |
@@ -163,6 +166,14 @@ random reduction), a **control** (off, fade over N dabs, or pen pressure) and a
 - **Scattering** - throw each dab off the stroke by up to N brush diameters, with
   `count` dabs per spacing step.
 - **Transfer** - opacity and flow jitter.
+- **Colour dynamics** - mix each dab from the foreground colour towards a **background
+  colour** (by jitter, fade or pen pressure), and jitter its hue, saturation and
+  brightness. **Purity** greys out or saturates every dab. With **apply per tip** off,
+  one colour is picked per stroke instead of per dab. Brightness jitter scales the
+  colour rather than clipping it, so it behaves on HDR values.
+- **Noise** - grain in the soft part of the tip, fixed to the image like paper texture.
+- **Wet edges** - paint collects at the edges of the stroke and thins in the middle,
+  like watercolour. An approximation of Photoshop's, not an exact match.
 
 Every stroke replays the same random sequence from the **random seed**, so a stroke you
 like is reproducible.
@@ -212,15 +223,21 @@ blends only with the layers below it.
   - **other frames** - megabytes of paint kept for frames you are not on, in
     single-frame mode (default 2048). Past it, the furthest frames are written to disk
     and released; they reload when you go back. 0 never releases unsaved frames.
-  - **in use** - what the node is holding right now.
+  - **in use** - what the node is holding right now, against the limits above, e.g.
+    `paint 336 MB · undo 1011 MB of 1.0 GB · clone cache 0 MB of 512 MB`. Undo
+    reaching its limit is normal: the oldest steps are dropped to make room.
   - **Free memory** - empties the clone cache and undo history and releases other
     frames. Paint is not lost, but earlier strokes can no longer be undone.
 
   These limits describe the machine rather than the shot, so they are not saved in the
   script. Set `NPAINTSHOP_UNDO_MB`, `NPAINTSHOP_CLONE_CACHE_MB` or `NPAINTSHOP_FRAME_MB`
   to change the defaults.
-- **Performance** - **last stroke** reports where the time went on the last stroke.
-  Please include it when reporting a slow brush.
+- **Performance** - **last stroke** says how hard the brush worked, e.g.
+  `160 ms of painting in a 1.6 s stroke (10%): kept up easily`. Well under half means
+  the brush kept up with your hand; if painting still feels laggy, it is Nuke redrawing
+  the viewer, and raising **refresh every** helps. Near 100% means the brush itself is
+  the bottleneck - a smaller brush or larger spacing helps. The raw numbers are under
+  **details for bug reports**; please copy them into reports about speed.
 
 ### Large plates on 16 GB machines
 
@@ -259,8 +276,8 @@ and smudge would bake proxy-resolution pixels permanently into full-resolution p
 ## Limits
 
 - `.abr`: brush names, tip bitmaps, size, spacing, hardness, angle, roundness, flips,
-  and the shape, scattering and transfer dynamics are read. Texture, Dual Brush, Colour
-  Dynamics, Brush Pose, Wet Edges, Noise, Airbrush and mixer-brush settings are not.
+  and the shape, scattering, transfer and colour dynamics, noise and wet edges are read.
+  Texture, Dual Brush, Brush Pose, Airbrush and mixer-brush settings are not.
   Dynamics driven by pen tilt or the stylus wheel fall back to off, since Nuke does not
   report those.
 - No blur, sharpen or dodge/burn brushes yet.
@@ -268,8 +285,9 @@ and smudge would bake proxy-resolution pixels permanently into full-resolution p
   Move down rather than by dragging.
 - Clone offsets are whole pixels (sharp, no resampling).
 - The undo history is kept in memory and is lost when the script is reloaded.
-- Very large brushes on very large plates (a 2000 px brush on a 16k latlong) can still
-  lag. This is being worked on.
+- Very large brushes on very large plates (a 2000 px brush on a 16k latlong) are much
+  faster than in earlier builds; the **last stroke** line on the Settings tab says
+  whether the brush is keeping up.
 
 ## Reporting problems
 
@@ -278,7 +296,8 @@ page with:
 
 - your Nuke version (e.g. 17.0v3) and operating system,
 - what you did and what happened,
-- for slowness, the **last stroke** and **in use** lines from the Settings tab,
+- for slowness, the **in use** line and the **stroke** line under **details for bug
+  reports** on the Settings tab,
 - for crashes, whether it happens again and what you were doing just before.
 
 ## Build from source

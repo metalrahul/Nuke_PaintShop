@@ -425,6 +425,18 @@ BrushPreset presetFromDescriptor(const DVal& b, const std::map<std::string, int>
     readDyn(b.find("opVr"), p.dyn.opacity);  // opacity jitter
     readDyn(b.find("prVr"), p.dyn.flow);     // flow jitter
   }
+  // Key names as Photoshop writes them; "H   " is padded to four characters.
+  p.dyn.noise = b.boolOr("Nose", false);
+  p.dyn.wetEdges = b.boolOr("Wtdg", false);
+  if (b.boolOr("useColorDynamics", false)) {
+    readDyn(b.find("clVr"), p.dyn.fgbg);
+    p.dyn.hueJitter = clamp01f(b.numOr("H   ", 0.0) / 100.0);
+    p.dyn.satJitter = clamp01f(b.numOr("Strt", 0.0) / 100.0);
+    p.dyn.briJitter = clamp01f(b.numOr("Brgh", 0.0) / 100.0);
+    p.dyn.purity = std::max(-1.0f, std::min(1.0f, float(b.numOr("purity", 0.0) / 100.0)));
+    // Only written when it is on; a brush without it varies once per stroke.
+    p.dyn.colorPerTip = b.boolOr("colorDynamicsPerTip", false);
+  }
   return p;
 }
 

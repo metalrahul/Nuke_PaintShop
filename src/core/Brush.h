@@ -42,6 +42,25 @@ struct BrushDynamics {
   // transfer
   DynControl opacity, flow;
 
+  // Photoshop's two on/off extras. Noise roughens the soft part of the tip; wet edges
+  // makes paint collect at the edge of the stroke and thins its middle, like watercolour.
+  bool noise = false;
+  bool wetEdges = false;
+
+  // colour dynamics. fgbg mixes from the foreground colour towards the background one:
+  // its jitter picks a random mix, fade walks it over N dabs, pen pressure holds it on
+  // the foreground at full pressure. Hue jitter 1 can reach any hue; saturation and
+  // brightness jitter vary those by up to the amount either way. Purity shifts the
+  // saturation of every dab: -1 greys it out completely, +1 saturates it fully.
+  DynControl fgbg;
+  float hueJitter = 0.0f, satJitter = 0.0f, briJitter = 0.0f;
+  float purity = 0.0f;
+  bool colorPerTip = true;  // false picks one colour for the whole stroke
+  bool colorAny() const {
+    return fgbg.jitter > 0.0f || fgbg.control != 0 || hueJitter > 0.0f || satJitter > 0.0f ||
+           briJitter > 0.0f || purity != 0.0f;
+  }
+
   unsigned seed = 1;  // per-stroke RNG seed, so a stroke is reproducible
   bool any() const;   // false when every setting is at its default
 };

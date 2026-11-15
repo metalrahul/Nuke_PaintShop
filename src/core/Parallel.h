@@ -50,6 +50,11 @@ inline int parallelWidth(int n) {
 // brush spent more time making threads than painting. Hence a pool.
 //
 // Created on first use, so a session that never paints a large brush never makes one.
+inline bool& inParallel() {
+  static thread_local bool v = false;
+  return v;
+}
+
 class Pool {
  public:
   static Pool& get() {
@@ -104,6 +109,10 @@ class Pool {
     }
   }
   void loop() {
+    // A worker is always inside a parallel section, so anything it calls that would
+    // fan out again (the tip rasteriser, say) runs inline rather than queueing work on
+    // the pool it is itself part of.
+    inParallel() = true;
     uint64_t seen = 0;
     for (;;) {
       std::unique_lock<std::mutex> lk(m_);
@@ -131,10 +140,6 @@ class Pool {
 
 // True while this thread is already inside a parallel region, so nested calls stay
 // serial instead of deadlocking on a pool that is busy with the outer one.
-inline bool& inParallel() {
-  static thread_local bool v = false;
-  return v;
-}
 
 // Runs fn(0..n-1), spreading it across cores when `pixels` of work justify it.
 //

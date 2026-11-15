@@ -25,7 +25,73 @@ bool BrushDynamics::any() const {
   return angle != 0.0f || roundness != 1.0f || flipX || flipY || flipXJitter || flipYJitter ||
          size.jitter > 0.0f || size.control != 0 || round.jitter > 0.0f || round.control != 0 ||
          angleJitter > 0.0f || angleControl != kAngleOff || scatter > 0.0f || count > 1 ||
-         opacity.jitter > 0.0f || opacity.control != 0 || flow.jitter > 0.0f || flow.control != 0;
+         opacity.jitter > 0.0f || opacity.control != 0 || flow.jitter > 0.0f || flow.control != 0 ||
+         noise || wetEdges || colorAny();
+}
+
+namespace {
+// RGB <-> HSV that tolerates scene-linear values above 1: V is simply the largest
+// channel, so brightness jitter scales an HDR colour rather than clipping it.
+void rgbToHsv(const float c[3], float& h, float& s, float& v) {
+  const float mx = std::max(c[0], std::max(c[1], c[2]));
+  const float mn = std::min(c[0], std::min(c[1], c[2]));
+  v = mx;
+  const float d = mx - mn;
+  s = mx > 0.0f ? d / mx : 0.0f;
+  if (d <= 0.0f) { h = 0.0f; return; }
+  if (mx == c[0]) h = (c[1] - c[2]) / d;
+  else if (mx == c[1]) h = 2.0f + (c[2] - c[0]) / d;
+  else h = 4.0f + (c[0] - c[1]) / d;
+  h /= 6.0f;
+  if (h < 0.0f) h += 1.0f;
+}
+void hsvToRgb(float h, float s, float v, float c[3]) {
+  h -= std::floor(h);
+  const float f = h * 6.0f;
+  const int i = int(f) % 6;
+  const float r = f - std::floor(f);
+  const float p = v * (1.0f - s), q = v * (1.0f - s * r), t = v * (1.0f - s * (1.0f - r));
+  switch (i) {
+    case 0: c[0] = v; c[1] = t; c[2] = p; break;
+    case 1: c[0] = q; c[1] = v; c[2] = p; break;
+    case 2: c[0] = p; c[1] = v; c[2] = t; break;
+    case 3: c[0] = p; c[1] = q; c[2] = v; break;
+    case 4: c[0] = t; c[1] = p; c[2] = v; break;
+    default: c[0] = v; c[1] = p; c[2] = q; break;
+  }
+}
+// A fixed grain in canvas space, so noise reads as texture on the paper rather than
+// fizzing as the brush moves.
+inline float grain(int x, int y) {
+  uint32_t h = uint32_t(x) * 0x8da6b343u ^ uint32_t(y) * 0xd8163841u;
+  h ^= h >> 15; h *= 0x2c1b3c6du; h ^= h >> 12; h *= 0x297a2d39u; h ^= h >> 15;
+  return float(h & 0xffffffu) * (1.0f / 16777216.0f);
+}
+// Wet edges, applied to the stroke's coverage: the middle of a stroke settles at
+// half strength, while partly covered pixels - the stroke's edges - stay stronger.
+inline float wet(float m) { const float m2 = m * m; return m * (1.0f - 0.5f * m2 * m2); }
+}  // namespace
+
+void PaintEngine::dynColor(float pressure, float out[3]) {
+  const BrushDynamics& d = p_.dyn;
+  float c[3] = {p_.color[0], p_.color[1], p_.color[2]};
+  if (d.fgbg.jitter > 0.0f || d.fgbg.control != 0) {
+    // dynFactor is 1 for "all foreground"; its complement is how far to go towards bg.
+    const float t = 1.0f - dynFactor(d.fgbg, pressure);
+    for (int k = 0; k < 3; ++k) c[k] += (p_.bgColor[k] - c[k]) * t;
+  }
+  if (d.hueJitter > 0.0f || d.satJitter > 0.0f || d.briJitter > 0.0f || d.purity != 0.0f) {
+    float h, sa, v;
+    rgbToHsv(c, h, sa, v);
+    if (d.hueJitter > 0.0f) h += (rand01() - 0.5f) * clamp01(d.hueJitter);
+    if (d.satJitter > 0.0f) sa += (rand01() - 0.5f) * 2.0f * clamp01(d.satJitter);
+    if (d.briJitter > 0.0f) v *= std::max(0.0f, 1.0f + (rand01() - 0.5f) * 2.0f * clamp01(d.briJitter));
+    const float pu = std::max(-1.0f, std::min(1.0f, d.purity));
+    sa = clamp01(sa);
+    sa = pu >= 0.0f ? sa + (1.0f - sa) * pu : sa * (1.0f + pu);
+    hsvToRgb(h, clamp01(sa), v, c);
+  }
+  for (int k = 0; k < 3; ++k) out[k] = c[k];
 }
 
 // xorshift32: cheap, and seeded per stroke so a stroke always plays out the same way.
@@ -88,6 +154,17 @@ IRect PaintEngine::beginStroke(std::shared_ptr<Canvas> canvas, const BrushParams
   smudgeHas_ = false;  // each stroke starts by picking up fresh colour
   scanUs_ = gatherUs_ = pixelUs_ = rasterUs_ = 0;
   useA_ = p_.dyn.opacity.jitter > 0.0f || p_.dyn.opacity.control != 0;
+  color_.clear();
+  strokeColorSet_ = false;
+  for (int k = 0; k < 3; ++k) dabColor_[k] = p_.color[k];
+  // A colour that changes from dab to dab needs the stroke's colour kept per pixel;
+  // one colour for the whole stroke does not.
+  useC_ = p_.tool == Tool::Paint && p_.dyn.colorAny() && p_.dyn.colorPerTip;
+  // Skipping saturated tiles is exact only when a fully covered pixel's result cannot
+  // change: the stroke's opacity and colour are fixed, and the tool composites onto the
+  // pre-stroke snapshot rather than its own output (smudge does the latter; clone's
+  // source can differ from dab to dab).
+  skipFull_ = (p_.tool == Tool::Paint || p_.tool == Tool::Erase) && !useA_ && !useC_;
   lx_ = x; ly_ = y; lp_ = pressure; acc_ = 0.0f; dir_ = 0.0f;
   rawX_ = x; rawY_ = y;
   rng_ = p_.dyn.seed ? p_.dyn.seed : 1u;
@@ -265,6 +342,10 @@ IRect PaintEngine::stamp(float cx, float cy, float pressure, float dir) {
     sh.flipX = d.flipX ^ (d.flipXJitter && rand01() < 0.5f);
     sh.flipY = d.flipY ^ (d.flipYJitter && rand01() < 0.5f);
 
+    if (p_.tool == Tool::Paint && d.colorAny() && (d.colorPerTip || !strokeColorSet_)) {
+      dynColor(pressure, dabColor_);
+      strokeColorSet_ = true;
+    }
     const float opacity = clamp01(p_.opacity * dynFactor(d.opacity, pressure));
     const float flow = clamp01(p_.flow * (p_.pressureFlow ? pressure : 1.0f) *
                                dynFactor(d.flow, pressure));
@@ -296,76 +377,142 @@ IRect PaintEngine::stamp(float cx, float cy, float pressure, float dir) {
 //   out = lerp(pixel before the stroke, tool result, a)
 // Blending against the pre-stroke snapshot is what gives Photoshop-style opacity
 // without ever storing the stroke itself.
+//
+// Three passes, two of them across cores:
+//   1. per tile: rasterise the tip's coverage for that tile only, and note whether it
+//      reaches the tile at all. A tile the stroke has already saturated is skipped
+//      here, before any coverage is computed for it.
+//   2. serially: decide which tiles need a canvas tile, an undo snapshot or masks.
+//      The map inserts have to be serial; the allocating and copying do not, so they
+//      are queued and done across cores straight after.
+//   3. per tile: the pixel work.
 IRect PaintEngine::oneDab(float cx, float cy, const DabShape& shape, float opacity, float flow) {
   if (flow <= 0.0f || opacity <= 0.0f) return IRect();
   const IRect box = dabBounds(p_.tip, cx, cy, shape);
   const int bw = box.x1 - box.x0, bh = box.y1 - box.y0;
   if (bw <= 0 || bh <= 0) return IRect();
-  cov_.resize(size_t(bw) * bh);
-  const auto tRaster = std::chrono::steady_clock::now();
-  rasterizeDab(p_.tip, cx, cy, shape, box, cov_.data());
-  rasterUs_ += elapsedUs(tRaster);
   if (p_.tool == Tool::Clone) { src_.resize(size_t(TILE) * 4); vld_.resize(size_t(TILE)); }
-
-  const float cr = p_.color[0], cg = p_.color[1], cb = p_.color[2];
-  const int blendMode = p_.blend;
+  const size_t area = size_t(bw) * size_t(bh);
   static const Tile kZero;
   IRect dirty;
-  jobs_.clear();
 
-  // Which tiles the dab's coverage actually reaches. A round dab misses about a fifth
-  // of its own bounding box and the corners are not worth allocating tiles for, but
-  // finding that out is a second full pass over the dab. It used to run on one thread
-  // while the rest of the machine sat idle; now it runs across cores like everything
-  // else, and the serial pass below only visits tiles that survived it.
   const int tx0 = tileOf(box.x0), tx1 = tileOf(box.x1 - 1);
   const int ty0 = tileOf(box.y0), ty1 = tileOf(box.y1 - 1);
   const int ntx = tx1 - tx0 + 1, nty = ty1 - ty0 + 1;
-  const auto tScan = std::chrono::steady_clock::now();
-  covered_.assign(size_t(ntx) * size_t(nty), 0);
-  parallelFor(ntx * nty, size_t(bw) * size_t(bh), [&](int k) {
+  const int nt = ntx * nty;
+  auto tileBox = [&](int k) {
     const int tx = tx0 + k % ntx, ty = ty0 + k / ntx;
-    const int rx0 = std::max(box.x0, tx * TILE), rx1 = std::min(box.x1, (tx + 1) * TILE);
-    const int ry0 = std::max(box.y0, ty * TILE), ry1 = std::min(box.y1, (ty + 1) * TILE);
-    for (int y = ry0; y < ry1; ++y) {
-      const float* c = cov_.data() + size_t(y - box.y0) * bw + (rx0 - box.x0);
-      for (int i = 0, m = rx1 - rx0; i < m; ++i)
-        if (c[i] > 0.0f) { covered_[size_t(k)] = 1; return; }
+    return IRect{std::max(box.x0, tx * TILE), std::max(box.y0, ty * TILE),
+                 std::min(box.x1, (tx + 1) * TILE), std::min(box.y1, (ty + 1) * TILE)};
+  };
+
+  // ---- 1. coverage, tile by tile
+  const auto tRaster = std::chrono::steady_clock::now();
+  if (cov_.size() < size_t(nt) * TILE_PIXELS) cov_.resize(size_t(nt) * TILE_PIXELS);
+  covered_.assign(size_t(nt), 0);
+  const bool noise = p_.dyn.noise;
+  const MaskMap& masks = mask_;
+  parallelFor(nt, area, [&](int k) {
+    const int tx = tx0 + k % ntx, ty = ty0 + k / ntx;
+    if (skipFull_) {
+      auto it = masks.find(tileKey(tx, ty));
+      if (it != masks.end() && it->second->full()) return;
     }
+    const IRect tr = tileBox(k);
+    const int rw = tr.x1 - tr.x0;
+    float* c = cov_.data() + size_t(k) * TILE_PIXELS;
+    rasterizeDab(p_.tip, cx, cy, shape, tr, c);
+    bool any = false;
+    for (int y = tr.y0; y < tr.y1; ++y) {
+      float* row = c + size_t(y - tr.y0) * rw;
+      for (int i = 0; i < rw; ++i) {
+        float v = row[i];
+        if (v <= 0.0f) continue;
+        if (noise) {
+          // Only the soft part of the tip: full coverage and none are left alone.
+          const float w = 4.0f * v * (1.0f - v);
+          if (w > 0.0f) {
+            v = clamp01(v + (grain(tr.x0 + i, y) - 0.5f) * 1.8f * w);
+            row[i] = v;
+          }
+        }
+        if (v > 0.0f) any = true;
+      }
+    }
+    covered_[size_t(k)] = any ? 1 : 0;
   });
-  scanUs_ += elapsedUs(tScan);
+  rasterUs_ += elapsedUs(tRaster);
 
+  // ---- 2. bookkeeping, serial; the allocation it queues runs across cores
   const auto tGather = std::chrono::steady_clock::now();
-  for (int ty = ty0; ty <= ty1; ++ty) {
-    for (int tx = tx0; tx <= tx1; ++tx) {
-      if (!covered_[size_t(ty - ty0) * size_t(ntx) + size_t(tx - tx0)]) continue;
-      const IRect tr{std::max(box.x0, tx * TILE), std::max(box.y0, ty * TILE),
-                     std::min(box.x1, (tx + 1) * TILE), std::min(box.y1, (ty + 1) * TILE)};
-
-      const uint64_t key = tileKey(tx, ty);
-      auto bit = before_.find(key);
-      if (bit == before_.end()) {
-        const Tile* existing = canvas_->find(tx, ty);
-        bit = before_.emplace(key, existing ? std::unique_ptr<Tile>(new Tile(*existing)) : nullptr).first;
-      }
-      const Tile* bef = bit->second ? bit->second.get() : &kZero;
-      Tile* cur = canvas_->getOrCreate(tx, ty);
-      auto& ms = mask_[key];
-      if (!ms) ms.reset(new MaskTile);
-      MaskTile* as = nullptr;
-      if (useA_) {
-        auto& slot = maskA_[key];
-        if (!slot) slot.reset(new MaskTile);
-        as = slot.get();
-      }
-
-      jobs_.push_back(TileJob{tr, bef, cur, ms.get(), as});
-      dirty.merge(tr);
+  struct Copy { std::unique_ptr<Tile>* dst; const Tile* src; };
+  std::vector<Copy> copies;
+  std::vector<std::unique_ptr<Tile>*> newTiles;
+  std::vector<std::unique_ptr<MaskTile>*> newMasks;
+  std::vector<std::unique_ptr<ColorTile>*> newColors;
+  struct Slots {
+    int k;
+    std::unique_ptr<Tile>* bef;
+    std::unique_ptr<Tile>* cur;
+    std::unique_ptr<MaskTile>* ms;
+    std::unique_ptr<MaskTile>* as;
+    std::unique_ptr<ColorTile>* cs;
+  };
+  std::vector<Slots> slots;
+  for (int k = 0; k < nt; ++k) {
+    if (!covered_[size_t(k)]) continue;
+    const int tx = tx0 + k % ntx, ty = ty0 + k / ntx;
+    const uint64_t key = tileKey(tx, ty);
+    Slots sl{k, nullptr, nullptr, nullptr, nullptr, nullptr};
+    auto bit = before_.find(key);
+    if (bit == before_.end()) {
+      const Tile* existing = canvas_->find(tx, ty);
+      bit = before_.emplace(key, nullptr).first;
+      if (existing) copies.push_back(Copy{&bit->second, existing});
     }
+    sl.bef = &bit->second;  // stays null when there was no tile before the stroke
+    // References into an unordered_map survive later inserts, so these slots stay
+    // valid while the rest of the dab is resolved.
+    std::unique_ptr<Tile>& cur = canvas_->tiles[key];
+    if (!cur) newTiles.push_back(&cur);
+    sl.cur = &cur;
+    std::unique_ptr<MaskTile>& ms = mask_[key];
+    if (!ms) newMasks.push_back(&ms);
+    sl.ms = &ms;
+    if (useA_) {
+      std::unique_ptr<MaskTile>& as = maskA_[key];
+      if (!as) newMasks.push_back(&as);
+      sl.as = &as;
+    }
+    if (useC_) {
+      std::unique_ptr<ColorTile>& cs = color_[key];
+      if (!cs) newColors.push_back(&cs);
+      sl.cs = &cs;
+    }
+    slots.push_back(sl);
+    dirty.merge(tileBox(k));
   }
-  // Tiles of one dab touch disjoint pixels, so they run across cores once the dab is
-  // big enough to pay for the threads. Clone stays serial: its source fetch reaches
-  // back into the host's image tree, which is not thread safe.
+  // Snapshots first: a tile being copied is never also one being created, but keeping
+  // the order obvious costs nothing. Every new tile is 256 KB to zero or copy, and on a
+  // big brush over existing paint this used to be a gigabyte of serial memory traffic.
+  const size_t nCopy = copies.size(), nNew = newTiles.size(), nMask = newMasks.size();
+  const int nAlloc = int(nCopy + nNew + nMask + newColors.size());
+  parallelFor(nAlloc, size_t(nAlloc) * TILE_PIXELS, [&](int i) {
+    size_t j = size_t(i);
+    if (j < nCopy) { copies[j].dst->reset(new Tile(*copies[j].src)); return; }
+    j -= nCopy;
+    if (j < nNew) { newTiles[j]->reset(new Tile); return; }
+    j -= nNew;
+    if (j < nMask) { newMasks[j]->reset(new MaskTile); return; }
+    j -= nMask;
+    newColors[j]->reset(new ColorTile);
+  });
+  jobs_.clear();
+  for (const Slots& sl : slots) {
+    jobs_.push_back(TileJob{tileBox(sl.k), cov_.data() + size_t(sl.k) * TILE_PIXELS,
+                            *sl.bef ? sl.bef->get() : &kZero, sl.cur->get(), sl.ms->get(),
+                            sl.as ? sl.as->get() : nullptr, sl.cs ? sl.cs->get() : nullptr});
+  }
   gatherUs_ += elapsedUs(tGather);
 
   // Smudge picks up colour before it puts any down, so this has to read the canvas
@@ -374,7 +521,7 @@ IRect PaintEngine::oneDab(float cx, float cy, const DabShape& shape, float opaci
   // smudge stroke fade from the colour it started on into the colour it ends on.
   if (p_.tool == Tool::Smudge) {
     float under[4];
-    if (sampleUnder(box, bw, under)) {
+    if (sampleUnder(under)) {
       if (!smudgeHas_) {
         std::memcpy(smudge_, under, sizeof(smudge_));
         smudgeHas_ = true;
@@ -385,10 +532,12 @@ IRect PaintEngine::oneDab(float cx, float cy, const DabShape& shape, float opaci
     }
   }
 
+  // ---- 3. pixels. Tiles of one dab touch disjoint pixels, so they run across cores.
+  // Clone stays serial: its source fetch reaches back into the host's image tree,
+  // which is not thread safe.
   const auto tPixels = std::chrono::steady_clock::now();
-  const size_t pixels = p_.tool == Tool::Clone ? 0 : size_t(bw) * size_t(bh);
-  parallelFor(int(jobs_.size()), pixels,
-              [&](int j) { dabTile(jobs_[j], box, bw, opacity, flow); });
+  const size_t pixels = p_.tool == Tool::Clone ? 0 : area;
+  parallelFor(int(jobs_.size()), pixels, [&](int j) { dabTile(jobs_[size_t(j)], opacity, flow); });
   pixelUs_ += elapsedUs(tPixels);
 
   if (!dirty.empty()) canvas_->dirty = true;
@@ -396,26 +545,30 @@ IRect PaintEngine::oneDab(float cx, float cy, const DabShape& shape, float opaci
   return dirty;
 }
 
-
-// The pixel work for one tile of a dab. Writes only into that tile's own buffers, so
-// tiles of the same dab are independent and can run on different cores.
 // Coverage-weighted average of what the dab is sitting on: this layer's live pixels
 // over whatever the supplier gives for the same tile, so smudging a plate through a
 // still-empty paint layer picks up the plate rather than nothing.
-bool PaintEngine::sampleUnder(const IRect& box, int bw, float out[4]) {
+bool PaintEngine::sampleUnder(float out[4]) {
   struct Part {
     double c[4] = {0, 0, 0, 0};
     double w = 0;
   };
   std::vector<Part> parts(jobs_.size());
-  parallelFor(int(jobs_.size()), size_t(box.x1 - box.x0) * size_t(box.y1 - box.y0), [&](int j) {
+  size_t area = 0;
+  for (const TileJob& j : jobs_) area += size_t(j.tr.x1 - j.tr.x0) * size_t(j.tr.y1 - j.tr.y0);
+  // bgTile is not thread safe (it fills bg_ and asks the host for tiles), so resolve
+  // every tile's source here, serially, before the parallel pass reads them.
+  std::vector<const SrcTile*> bgs(jobs_.size());
+  for (size_t j = 0; j < jobs_.size(); ++j)
+    bgs[j] = bgTile(tileOf(jobs_[j].tr.x0), tileOf(jobs_[j].tr.y0));
+  parallelFor(int(jobs_.size()), area, [&](int j) {
     const TileJob& job = jobs_[size_t(j)];
     const IRect& tr = job.tr;
     const int n = tr.x1 - tr.x0;
-    const SrcTile* bg = bgTile(tileOf(tr.x0), tileOf(tr.y0));
+    const SrcTile* bg = bgs[size_t(j)];
     Part& q = parts[size_t(j)];
     for (int y = tr.y0; y < tr.y1; ++y) {
-      const float* c = cov_.data() + size_t(y - box.y0) * bw + (tr.x0 - box.x0);
+      const float* c = job.cov + size_t(y - tr.y0) * n;
       const size_t off = size_t(y & TILE_MASK) * TILE + (tr.x0 & TILE_MASK);
       const float* s = job.cur->px + off * 4;
       const float* u = bg ? bg->px.px + off * 4 : nullptr;
@@ -440,50 +593,64 @@ bool PaintEngine::sampleUnder(const IRect& box, int bw, float out[4]) {
   return true;
 }
 
-void PaintEngine::dabTile(const TileJob& job, const IRect& box, int bw, float opacity,
-                          float flow) {
+// The pixel work for one tile of a dab. Writes only into that tile's own buffers, so
+// tiles of the same dab are independent and can run on different cores.
+void PaintEngine::dabTile(const TileJob& job, float opacity, float flow) {
   const IRect& tr = job.tr;
   const int n = tr.x1 - tr.x0;
   const Tile* bef = job.bef;
   Tile* cur = job.cur;
   MaskTile* ms = job.ms;
   MaskTile* as = job.as;
-  const float cr = p_.color[0], cg = p_.color[1], cb = p_.color[2];
+  ColorTile* cs = job.cs;
+  const float cr = dabColor_[0], cg = dabColor_[1], cb = dabColor_[2];
   const int blendMode = p_.blend;
+  const bool wetEdges = p_.dyn.wetEdges;
+  int sat = 0;  // pixels that reach full coverage during this dab
+  // The stroke mask, built up by flow. Counts the pixels that reach exactly 1, which is
+  // what lets a later dab skip a tile the stroke has already saturated.
+  auto build = [&sat](float* M, int i, float cv) {
+    const float m0 = M[i];
+    const float m = m0 + (1.0f - m0) * cv;
+    if (m >= 1.0f && m0 < 1.0f) ++sat;
+    M[i] = m;
+    return m;
+  };
   for (int y = tr.y0; y < tr.y1; ++y) {
-    const float* c = cov_.data() + size_t(y - box.y0) * bw + (tr.x0 - box.x0);
+    const float* c = job.cov + size_t(y - tr.y0) * n;
     const size_t off = size_t(y & TILE_MASK) * TILE + (tr.x0 & TILE_MASK);
     float* M = ms->a + off;
     float* A = as ? as->a + off : nullptr;
+    float* C = cs ? cs->c + off * 3 : nullptr;
     float* o = cur->px + off * 4;
     const float* b = bef->px + off * 4;
     switch (p_.tool) {
       case Tool::Paint:
-        if (blendMode == kNormal) {
-          for (int i = 0; i < n; ++i) {
-            const float cv = c[i] * flow;
-            if (cv <= 0.0f) continue;
-            const float m = M[i] + (1.0f - M[i]) * cv;
-            M[i] = m;
-            float a = m * opacity;
-            if (A) { if (a > A[i]) A[i] = a; a = A[i]; }
-            const float ia = 1.0f - a;
-            o[i * 4] = b[i * 4] * ia + cr * a;
-            o[i * 4 + 1] = b[i * 4 + 1] * ia + cg * a;
-            o[i * 4 + 2] = b[i * 4 + 2] * ia + cb * a;
-            o[i * 4 + 3] = b[i * 4 + 3] * ia + a;
+        for (int i = 0; i < n; ++i) {
+          const float cv = c[i] * flow;
+          if (cv <= 0.0f) continue;
+          const float m = build(M, i, cv);
+          float a = (wetEdges ? wet(m) : m) * opacity;
+          if (A) { if (a > A[i]) A[i] = a; a = A[i]; }
+          float r = cr, g = cg, bl = cb;
+          if (C) {
+            // This dab's colour over the stroke's colour so far, by this dab's share.
+            float* P = C + i * 3;
+            const float k = 1.0f - cv;
+            P[0] = cr * cv + P[0] * k; P[1] = cg * cv + P[1] * k; P[2] = cb * cv + P[2] * k;
+            const float inv = m > 0.0f ? 1.0f / m : 0.0f;
+            r = P[0] * inv; g = P[1] * inv; bl = P[2] * inv;
           }
-        } else {
-          // The whole stroke is one blend onto the pre-stroke pixels, which is why
-          // the source alpha is the accumulated stroke alpha rather than this dab's.
-          for (int i = 0; i < n; ++i) {
-            const float cv = c[i] * flow;
-            if (cv <= 0.0f) continue;
-            const float m = M[i] + (1.0f - M[i]) * cv;
-            M[i] = m;
-            float a = m * opacity;
-            if (A) { if (a > A[i]) A[i] = a; a = A[i]; }
-            const float src[4] = {cr * a, cg * a, cb * a, a};
+          if (blendMode == kNormal) {
+            const float ia = 1.0f - a;
+            o[i * 4] = b[i * 4] * ia + r * a;
+            o[i * 4 + 1] = b[i * 4 + 1] * ia + g * a;
+            o[i * 4 + 2] = b[i * 4 + 2] * ia + bl * a;
+            o[i * 4 + 3] = b[i * 4 + 3] * ia + a;
+          } else {
+            // The whole stroke is one blend onto the pre-stroke pixels, which is why
+            // the source alpha is the accumulated stroke alpha rather than this dab's.
+            const float src[4] = {r * a, g * a, bl * a, a};
             float dst[4] = {b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]};
             blendPixel(blendMode, 1.0f, src, dst);
             for (int ch = 0; ch < 4; ++ch) o[i * 4 + ch] = dst[ch];
@@ -494,9 +661,8 @@ void PaintEngine::dabTile(const TileJob& job, const IRect& box, int bw, float op
         for (int i = 0; i < n; ++i) {
           const float cv = c[i] * flow;
           if (cv <= 0.0f) continue;
-          const float m = M[i] + (1.0f - M[i]) * cv;
-          M[i] = m;
-          float a = m * opacity;
+          const float m = build(M, i, cv);
+          float a = (wetEdges ? wet(m) : m) * opacity;
           if (A) { if (a > A[i]) A[i] = a; a = A[i]; }
           const float ia = 1.0f - a;
           o[i * 4] = b[i * 4] * ia; o[i * 4 + 1] = b[i * 4 + 1] * ia;
@@ -529,9 +695,8 @@ void PaintEngine::dabTile(const TileJob& job, const IRect& box, int bw, float op
           if (!v[i]) continue;
           const float cv = c[i] * flow;
           if (cv <= 0.0f) continue;
-          const float m = M[i] + (1.0f - M[i]) * cv;
-          M[i] = m;
-          float a = m * opacity;
+          const float m = build(M, i, cv);
+          float a = (wetEdges ? wet(m) : m) * opacity;
           if (A) { if (a > A[i]) A[i] = a; a = A[i]; }
           if (blendMode != kNormal) {
             const float src4[4] = {s[i * 4] * a, s[i * 4 + 1] * a, s[i * 4 + 2] * a,
@@ -555,6 +720,7 @@ void PaintEngine::dabTile(const TileJob& job, const IRect& box, int bw, float op
       }
     }
   }
+  ms->sat += sat;  // only this job touches this tile's mask, so no race
 }
 
 
@@ -587,7 +753,7 @@ bool PaintEngine::endStroke() {
     redo_.clear();
     trim();
   }
-  before_.clear(); mask_.clear(); maskA_.clear(); bg_.clear(); miss_.clear();
+  before_.clear(); mask_.clear(); maskA_.clear(); color_.clear(); bg_.clear(); miss_.clear();
   // missedEver_ and the hit/miss counts deliberately survive: the caller reports on the
   // stroke after endStroke returns, and clearing them here would always report zero.
   canvas_.reset();

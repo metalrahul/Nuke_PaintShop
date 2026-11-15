@@ -14,6 +14,7 @@ enum class Tool { Paint = 0, Erase = 1, Clone = 2, Smudge = 3 };
 struct BrushParams {
   Tool tool = Tool::Paint;
   float color[3] = {1.0f, 1.0f, 1.0f};
+  float bgColor[3] = {0.0f, 0.0f, 0.0f};  // the other end of colour dynamics' mix
   float size = 50.0f;       // diameter in pixels
   float hardness = 0.8f;    // round brush only
   float opacity = 1.0f;     // ceiling for the whole stroke (Photoshop "opacity")
@@ -108,12 +109,25 @@ class PaintEngine {
   int bgRetries() const { return bgMiss_; }
 
  private:
-  // Per-pixel stroke state, one tile's worth.
+  // Per-pixel stroke state, one tile's worth. `sat` counts pixels whose coverage has
+  // reached exactly 1: once all of them have, no later dab of an ordinary stroke can
+  // change the tile, and it is skipped outright - rasterising included. On a big brush
+  // that is most of every dab, because each spot sits under about ten of them.
   struct MaskTile {
     float a[TILE_PIXELS];
+    int sat = 0;
     MaskTile() { std::memset(a, 0, sizeof(a)); }
+    bool full() const { return sat >= TILE_PIXELS; }
   };
   using MaskMap = std::unordered_map<uint64_t, std::unique_ptr<MaskTile>>;
+  // The stroke's own colour, premultiplied by its coverage, for colour dynamics: each
+  // dab lands over the dabs before it in the stroke, as in Photoshop's stroke buffer.
+  // Only allocated when the colour changes from dab to dab.
+  struct ColorTile {
+    float c[TILE_PIXELS * 3];
+    ColorTile() { std::memset(c, 0, sizeof(c)); }
+  };
+  using ColorMap = std::unordered_map<uint64_t, std::unique_ptr<ColorTile>>;
   struct Entry {
     std::shared_ptr<Canvas> canvas;
     TileMap tiles;  // tile contents to swap in; a null value means "no tile here"
@@ -125,12 +139,16 @@ class PaintEngine {
   // thread safe) so the pixel work itself can be handed out across cores.
   struct TileJob {
     IRect tr;
+    const float* cov;  // this tile's coverage, rows of (tr.x1 - tr.x0)
     const Tile* bef;
     Tile* cur;
     MaskTile* ms;
     MaskTile* as;
+    ColorTile* cs;
   };
-  void dabTile(const TileJob& job, const IRect& box, int bw, float opacity, float flow);
+  void dabTile(const TileJob& job, float opacity, float flow);
+  // The colour of the next dab (or of the whole stroke), from the colour dynamics.
+  void dynColor(float pressure, float out[3]);
 
   float rand01();
   float dynFactor(const DynControl& d, float pressure);
@@ -174,10 +192,18 @@ class PaintEngine {
   bool smudgeHas_ = false;
 
   // Coverage-weighted average of what the dab is sitting on, for smudge pickup.
-  bool sampleUnder(const IRect& box, int bw, float out[4]);
+  bool sampleUnder(float out[4]);
 
   std::vector<TileJob> jobs_;  // the tiles of the dab being laid down
-  std::vector<float> cov_, src_;
+  // Coverage, one TILE_PIXELS slot per tile of the dab's bounding box, so each tile is
+  // rasterised on its own - and not at all when it is already saturated.
+  std::vector<float> cov_;
+  std::vector<float> src_;
+  ColorMap color_;
+  bool useC_ = false;      // colour varies per dab: keep the stroke colour per pixel
+  bool skipFull_ = false;  // saturated tiles can be skipped (see MaskTile)
+  float dabColor_[3] = {1.0f, 1.0f, 1.0f};
+  bool strokeColorSet_ = false;
   std::vector<uint8_t> vld_;  // clone: which pixels of src_ have a readable source
   int bgHit_ = 0, bgMiss_ = 0;
   size_t canvasTiles_ = 0;

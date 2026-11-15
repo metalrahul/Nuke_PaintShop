@@ -13,7 +13,9 @@ static const char* const HELP =
     "With the control panel open, in the 2D viewer:\n"
     "  drag                 paint with the current tool\n"
     "  Ctrl+click        set the clone source\n"
-    "  Shift+drag       resize the brush\n"
+    "  Shift+drag       straight stroke, locked horizontal or vertical\n"
+    "  Shift+click      straight line from where the last stroke ended\n"
+    "  Ctrl+Shift+drag  resize the brush\n"
     "  Alt+B / E / S    brush, eraser, clone stamp\n"
     "  Alt+U             smudge\n"
     "  Alt+C             pick the colour under the cursor\n"
@@ -139,6 +141,19 @@ struct PaintStore {
   float cursorX = 0, cursorY = 0, cloneSrcX = 0, cloneSrcY = 0;
   int dragMouseX = 0, dragMouseY = 0, dragCols = 6, dragRows = 4;
   float dragSize = 0;
+  // Shift+drag: Photoshop's axis-locked stroke. The axis is not known when the button
+  // goes down - it is whichever way the pointer first moves clearly - so a locked
+  // stroke starts undecided and holds its paint until then.
+  enum Axis { kFree, kUndecided, kHorizontal, kVertical };
+  Axis axis = kFree;
+  float anchorX = 0, anchorY = 0;          // where the stroke started, in image pixels
+  int anchorMouseX = 0, anchorMouseY = 0;  // and in screen pixels, to judge the direction
+  // A Shift press does not know yet whether it is a click (straight line from where the
+  // last stroke ended) or a drag (axis-locked stroke), so it starts nothing until it
+  // finds out.
+  bool strokeBegun = false;
+  bool haveLast = false;
+  float lastX = 0, lastY = 0;  // where the last stroke ended, in image pixels
 
   std::atomic<uint64_t> edits{0};
   const uint64_t nonce = uint64_t(std::chrono::steady_clock::now().time_since_epoch().count());
@@ -557,6 +572,10 @@ static const BrushSetting kBrushSettings[] = {
     {"scatter", 0}, {"scatter_both", 0}, {"scatter_count", 1}, {"count_jitter", 0},
     {"opacity_jitter", 0}, {"opacity_control", 0}, {"opacity_fade", 25}, {"opacity_minimum", 0},
     {"flow_jitter", 0}, {"flow_control", 0}, {"flow_fade", 25}, {"flow_minimum", 0},
+    {"noise", 0}, {"wet_edges", 0},
+    {"fgbg_jitter", 0}, {"fgbg_control", 0}, {"fgbg_fade", 25}, {"fgbg_minimum", 0},
+    {"hue_jitter", 0}, {"sat_jitter", 0}, {"bri_jitter", 0}, {"purity", 0},
+    {"color_per_tip", 1},
     {"dyn_seed", 1},
 };
 
@@ -709,6 +728,12 @@ class NPaintShop : public Iop {
   int opacityControl_ = 0, opacityFade_ = 25;
   float flowJitter_ = 0.0f, flowMin_ = 0.0f;
   int flowControl_ = 0, flowFade_ = 25;
+  bool noise_ = false, wetEdges_ = false;
+  float bgColor_[3] = {0.0f, 0.0f, 0.0f};
+  float fgbgJitter_ = 0.0f, fgbgMin_ = 0.0f;
+  int fgbgControl_ = 0, fgbgFade_ = 25;
+  float hueJitter_ = 0.0f, satJitter_ = 0.0f, briJitter_ = 0.0f, purity_ = 0.0f;
+  bool colorPerTip_ = true;
   int dynSeed_ = 1;
 
   int lifetime_ = 0;
@@ -816,7 +841,7 @@ class NPaintShop : public Iop {
                "folder on NUKE_PATH, so a facility can publish one set to everybody.");
     Float_knob(f, &size_, "size");
     SetRange(f, 1, 500);
-    Tooltip(f, "Brush diameter in pixels. Shift+drag in the viewer to change it.");
+    Tooltip(f, "Brush diameter in pixels. Ctrl+Shift+drag in the viewer to change it.");
     Float_knob(f, &hardness_, "hardness");
     Tooltip(f, "Edge hardness of the round brush.");
     Float_knob(f, &opacity_, "opacity");
@@ -1043,6 +1068,55 @@ class NPaintShop : public Iop {
     SetRange(f, 0, 1);
     EndGroup(f);
 
+    BeginGroup(f, "color_dynamics", "colour dynamics");
+    Color_knob(f, bgColor_, "bg_color", "background colour");
+    Tooltip(f, "The colour the foreground/background controls below mix towards. The "
+               "foreground colour is 'color' on the main tab.");
+    Float_knob(f, &fgbgJitter_, "fgbg_jitter", "fg/bg jitter");
+    SetRange(f, 0, 1);
+    Tooltip(f, "Mixes each dab a random amount of the way from the foreground colour "
+               "towards the background colour. 1 can reach the background colour.");
+    Enumeration_knob(f, &fgbgControl_, kControl, "fgbg_control", "control");
+    Tooltip(f, "'fade' moves from the foreground colour to the background one over the next "
+               "few dabs. 'pen pressure' gives the foreground at full pressure and the "
+               "background at the lightest touch; it does nothing with a mouse.");
+    Int_knob(f, &fgbgFade_, "fgbg_fade", "fade steps");
+    SetRange(f, 1, 200);
+    Tooltip(f, "How many dabs the fade takes to reach the background colour.");
+    Float_knob(f, &fgbgMin_, "fgbg_minimum", "minimum");
+    SetRange(f, 0, 1);
+    Tooltip(f, "How much foreground colour is always kept, whatever the jitter or fade.");
+    Divider(f);
+    Float_knob(f, &hueJitter_, "hue_jitter", "hue jitter");
+    SetRange(f, 0, 1);
+    Tooltip(f, "Shifts each dab's hue at random. 1 can land on any hue.");
+    Float_knob(f, &satJitter_, "sat_jitter", "saturation jitter");
+    SetRange(f, 0, 1);
+    Tooltip(f, "Varies each dab's saturation at random, up to this much either way.");
+    Float_knob(f, &briJitter_, "bri_jitter", "brightness jitter");
+    SetRange(f, 0, 1);
+    Tooltip(f, "Varies each dab's brightness at random, up to this much either way. Scales "
+               "the colour rather than clipping it, so it behaves on HDR values.");
+    Float_knob(f, &purity_, "purity", "purity");
+    SetRange(f, -1, 1);
+    Tooltip(f, "Shifts the saturation of every dab: -1 greys it out completely, 1 saturates "
+               "it fully, 0 leaves it alone.");
+    Bool_knob(f, &colorPerTip_, "color_per_tip", "apply per tip");
+    Tooltip(f, "On: every dab gets its own colour. Off: one colour is picked when the stroke "
+               "starts and used for all of it.");
+    EndGroup(f);
+
+    BeginGroup(f, "noise_wet", "noise and wet edges");
+    Bool_knob(f, &noise_, "noise", "noise");
+    Tooltip(f, "Adds grain to the soft part of the tip. Fully covered and empty pixels are "
+               "left alone, so it shows on soft brushes and does almost nothing to a hard one. "
+               "The grain is fixed to the image, like paper texture.");
+    Bool_knob(f, &wetEdges_, "wet_edges", "wet edges");
+    Tooltip(f, "Paint collects at the edges of the stroke and thins out in the middle, like "
+               "watercolour: the solid middle of a stroke settles at about half strength. Shows "
+               "best on soft brushes. An approximation of Photoshop's, not an exact match.");
+    EndGroup(f);
+
     Int_knob(f, &dynSeed_, "dyn_seed", "random seed");
     SetRange(f, 1, 9999);
     Tooltip(f, "Every stroke replays the same random sequence from this seed, so a stroke "
@@ -1120,11 +1194,13 @@ class NPaintShop : public Iop {
     // value back, so the status fields simply have no member at all.
     String_knob(f, "memory_status", "in use");
     SetFlags(f, Knob::DISABLED | Knob::NO_ANIMATION | Knob::DO_NOT_WRITE | Knob::OUTPUT_ONLY);
-    Tooltip(f, "What this node is holding right now. 'paint' is the layers themselves - "
-               "256 KB for every 128x128 tile with paint on it, so a fully covered 16k "
-               "layer is 2 GB - and is your work, not a cache: it is only released for "
-               "frames you are not on. 'undo' and 'clone cache' are bounded by the limits "
-               "above. Updated after each stroke and when the panel opens.");
+    Tooltip(f, "Memory this node is using right now, updated after each stroke.\n"
+               "paint: your painted layers. This is your work, not a cache, so it is never "
+               "thrown away - only frames you are not on are written to disk and released. "
+               "A fully painted 16k layer is about 2 GB.\n"
+               "undo: undo history, against its limit above. Reaching the limit is normal: "
+               "the oldest steps are dropped to make room.\n"
+               "clone cache: clone source kept in memory, against its limit above.");
 
     Button(f, "free_memory", "Free memory");
     Tooltip(f, "Empties the clone cache, discards this node's undo history, and writes "
@@ -1140,22 +1216,31 @@ class NPaintShop : public Iop {
                "large plate none of them ever finished. Raise this if painting on a huge "
                "image still feels heavy; 0 refreshes on every mouse move, as it used to.");
 
+    String_knob(f, "stroke_status", "last stroke");  // no storage pointer, see memory_status
+    SetFlags(f, Knob::DISABLED | Knob::NO_ANIMATION | Knob::DO_NOT_WRITE | Knob::OUTPUT_ONLY);
+    Tooltip(f, "How hard the brush had to work on the last stroke: the time spent painting "
+               "against how long the stroke took. Well under half means the brush kept up "
+               "with your hand, and any lag you feel is Nuke redrawing the viewer - raise "
+               "'refresh every' to ease it. Near the whole stroke means the brush itself is "
+               "the bottleneck: a smaller brush or larger spacing will help.");
+
+    // Raw numbers, for bug reports. Closed by default so they do not clutter the panel.
+    // OUTPUT_ONLY on these keeps updating them from marking the script modified.
+    BeginClosedGroup(f, "diagnostics_group", "details for bug reports");
+    String_knob(f, "stroke_details", "stroke");  // no storage pointer, see memory_status
+    SetFlags(f, Knob::DISABLED | Knob::NO_ANIMATION | Knob::DO_NOT_WRITE | Knob::OUTPUT_ONLY);
+    Tooltip(f, "The last stroke in full, in milliseconds. brush: painting, split into "
+               "computing the tip, preparing tiles and writing pixels. clone source: reading "
+               "the image being cloned. rest: the remainder of the stroke - Nuke redrawing, "
+               "and simply the time your hand was moving. Please copy this into bug reports "
+               "about speed.");
     String_knob(f, "clone_status", "clone source");  // no storage pointer, see memory_status
-    // OUTPUT_ONLY keeps updating this from marking the script modified, so a clone
-    // stroke does not leave an unsaved-changes asterisk behind.
     SetFlags(f, Knob::DISABLED | Knob::NO_ANIMATION | Knob::DO_NOT_WRITE | Knob::OUTPUT_ONLY);
     Tooltip(f, "What the last clone stroke found behind the brush. Pixels with no source - "
                "outside the image, or an offset pointing off the plate - are left untouched "
                "rather than painted, so a clone stroke can never lay down a flat patch of "
                "nothing.");
-
-    String_knob(f, "stroke_status", "last stroke");  // no storage pointer, see memory_status
-    SetFlags(f, Knob::DISABLED | Knob::NO_ANIMATION | Knob::DO_NOT_WRITE | Knob::OUTPUT_ONLY);
-    Tooltip(f, "Where the last stroke's time went. 'engine' is this node laying pixels "
-               "down, 'fetch' is reading the clone source, and 'elsewhere' is everything "
-               "outside the node - mostly Nuke re-rendering and re-validating the tree. "
-               "If 'elsewhere' dominates, the plate and the upstream tree are the cost, "
-               "not the brush.");
+    EndGroup(f);
 
     // Closed by default: a reference to look up, not something to scroll past every time.
     BeginClosedGroup(f, "shortcuts_group", "shortcuts");
@@ -1171,7 +1256,9 @@ class NPaintShop : public Iop {
     Text_knob(f, "Alt+L", "layer list");
     Text_knob(f, "Drag", "paint");
     Text_knob(f, "Ctrl+click", "set the clone source");
-    Text_knob(f, "Shift+drag", "resize the brush");
+    Text_knob(f, "Shift+drag", "straight stroke, horizontal or vertical");
+    Text_knob(f, "Shift+click", "straight line from the end of the last stroke");
+    Text_knob(f, "Ctrl+Shift+drag", "resize the brush");
     EndGroup(f);
 
     // About. The build date comes from the compiler, so a tester's screenshot of this
@@ -1439,6 +1526,17 @@ class NPaintShop : public Iop {
     set("flow_control", d.flow.control);
     set("flow_fade", d.flow.fadeSteps);
     set("flow_minimum", d.flow.minimum);
+    set("noise", d.noise ? 1 : 0);
+    set("wet_edges", d.wetEdges ? 1 : 0);
+    set("fgbg_jitter", d.fgbg.jitter);
+    set("fgbg_control", d.fgbg.control);
+    set("fgbg_fade", d.fgbg.fadeSteps);
+    set("fgbg_minimum", d.fgbg.minimum);
+    set("hue_jitter", d.hueJitter);
+    set("sat_jitter", d.satJitter);
+    set("bri_jitter", d.briJitter);
+    set("purity", d.purity);
+    set("color_per_tip", d.colorPerTip ? 1 : 0);
   }
 
   // ---------------------------------------------------------------- brush presets
@@ -1508,6 +1606,10 @@ class NPaintShop : public Iop {
     const std::vector<Preset> ps = BrushPresets::read();
     if (sel <= 0 || sel > int(ps.size())) return;
     const std::string line = ps[size_t(sel - 1)].line;
+    // Start from the defaults, so a setting the preset does not mention - one added to
+    // the node after the preset was saved - comes out off rather than left as it was.
+    for (const BrushSetting& bs : kBrushSettings)
+      if (Knob* k = knob(bs.knob)) k->set_value(bs.def);
     std::string abr;
     int brushIdx = -1;
     size_t p = 0;
@@ -2191,9 +2293,13 @@ class NPaintShop : public Iop {
     PaintStore& s = store();
     if (s.engine.stroking()) return;
     const PaintStore::MemStats m = s.memStats();
+    const int undoLimit = std::max(64, int(knobValue("undo_memory", undoMB_)));
+    const int cloneLimit = std::max(128, int(knobValue("clone_cache", cloneCacheMB_)));
     char b[192];
-    std::snprintf(b, sizeof(b), "paint %zu MB (%d layer-frames), undo %zu MB, clone cache %zu MB",
-                  m.paint >> 20, m.canvases, m.undo >> 20, m.clone >> 20);
+    std::snprintf(b, sizeof(b), "paint %s  \xc2\xb7  undo %s of %s  \xc2\xb7  clone cache %s of %s",
+                  sizeText(m.paint).c_str(), sizeText(m.undo).c_str(),
+                  sizeText(size_t(undoLimit) << 20).c_str(), sizeText(m.clone).c_str(),
+                  sizeText(size_t(cloneLimit) << 20).c_str());
     memReport_ = b;
     setStatus("memory_status", memReport_);
   }
@@ -2208,21 +2314,46 @@ class NPaintShop : public Iop {
     if (!cur || text != cur) k->set_text(text.c_str());
   }
 
+  // 336 MB, 1.4 GB.
+  static std::string sizeText(size_t bytes) {
+    char b[32];
+    const double mb = double(bytes) / double(1 << 20);
+    if (mb >= 1024.0) std::snprintf(b, sizeof(b), "%.1f GB", mb / 1024.0);
+    else std::snprintf(b, sizeof(b), "%.0f MB", mb);
+    return b;
+  }
+  // 160 ms, 1.6 s.
+  static std::string timeText(long long us) {
+    char b[32];
+    if (us >= 1000000) std::snprintf(b, sizeof(b), "%.1f s", double(us) / 1e6);
+    else std::snprintf(b, sizeof(b), "%.0f ms", double(us) / 1e3);
+    return b;
+  }
+
   void reportStroke() {
     const long long wallUs = us(strokeStart_);
     PaintStore& s = store();
+    // The plain-language line: work done against the length of the stroke. A brush that
+    // keeps up spends most of a stroke waiting for the next mouse move.
+    const long long workUs = dabUs_ + fetchUs_;
+    const int pct = wallUs > 0 ? int(std::lround(100.0 * double(workUs) / double(wallUs))) : 0;
+    const char* verdict = pct < 30 ? "kept up easily" : pct < 70 ? "kept up" : "struggled to keep up";
     char b[384];
-    std::snprintf(b, sizeof(b),
-                  "%d moves in %.0f ms: engine %.0f (tip %.0f, scan %.0f, setup %.0f, "
-                  "pixels %.0f), fetch %.0f, elsewhere %.0f  (%d refreshes, %zu tiles)",
-                  moves_, wallUs / 1000.0, dabUs_ / 1000.0, s.engine.rasterUs() / 1000.0,
-                  s.engine.scanUs() / 1000.0, s.engine.gatherUs() / 1000.0,
-                  s.engine.pixelUs() / 1000.0, fetchUs_ / 1000.0,
-                  std::max(0.0, (wallUs - dabUs_ - fetchUs_) / 1000.0), flushes_,
-                  s.engine.canvasTiles());
+    std::snprintf(b, sizeof(b), "%s of painting in a %s stroke (%d%%): %s",
+                  timeText(workUs).c_str(), timeText(wallUs).c_str(), pct, verdict);
     strokeReport_ = b;
     setStatus("stroke_status", strokeReport_);
-    RPT("stroke: %s", strokeReport_.c_str());
+    // The full breakdown, for bug reports. Tip now includes finding which tiles a dab
+    // reaches, which used to be reported separately as "scan".
+    std::snprintf(b, sizeof(b),
+                  "%d moves in %.0f ms: brush %.0f (tip %.0f, setup %.0f, pixels %.0f), "
+                  "clone source %.0f, rest %.0f, %d refreshes, %zu tiles",
+                  moves_, wallUs / 1000.0, dabUs_ / 1000.0, s.engine.rasterUs() / 1000.0,
+                  s.engine.gatherUs() / 1000.0, s.engine.pixelUs() / 1000.0, fetchUs_ / 1000.0,
+                  std::max(0.0, (wallUs - dabUs_ - fetchUs_) / 1000.0), flushes_,
+                  s.engine.canvasTiles());
+    setStatus("stroke_details", std::string(b));
+    RPT("stroke: %s", b);
     reportMemory();
     if (tool_ == int(rp::Tool::Clone)) reportCloneStroke();
   }
@@ -2271,6 +2402,7 @@ class NPaintShop : public Iop {
     rp::BrushParams p;
     p.tool = rp::Tool(tool_);
     for (int i = 0; i < 3; ++i) p.color[i] = color_[i];
+    for (int i = 0; i < 3; ++i) p.bgColor[i] = bgColor_[i];
     p.size = size_; p.hardness = hardness_; p.opacity = opacity_; p.flow = flow_;
     p.spacing = spacing_; p.pressureSize = pressureSize_; p.pressureFlow = pressureFlow_;
     p.blend = std::max(0, std::min(brushBlend_, int(rp::kBlendCount) - 1));
@@ -2299,6 +2431,13 @@ class NPaintShop : public Iop {
     d.opacity.control = opacityControl_; d.opacity.fadeSteps = opacityFade_;
     d.flow.jitter = flowJitter_; d.flow.minimum = flowMin_;
     d.flow.control = flowControl_; d.flow.fadeSteps = flowFade_;
+    d.noise = noise_;
+    d.wetEdges = wetEdges_;
+    d.fgbg.jitter = fgbgJitter_; d.fgbg.minimum = fgbgMin_;
+    d.fgbg.control = fgbgControl_; d.fgbg.fadeSteps = fgbgFade_;
+    d.hueJitter = hueJitter_; d.satJitter = satJitter_; d.briJitter = briJitter_;
+    d.purity = purity_;
+    d.colorPerTip = colorPerTip_;
     d.seed = unsigned(dynSeed_ > 0 ? dynSeed_ : 1);
     return p;
   }
@@ -2445,26 +2584,52 @@ class NPaintShop : public Iop {
           glue->redraw();
           return true;
         }
-        if (st & CTRL) {
-          s.cloneSrcX = x; s.cloneSrcY = y; s.cloneSrcPending = true;
-          s.drag = PaintStore::kNone;
-          glue->redraw();
-        } else if (st & SHIFT) {
+        // Ctrl+Shift before Ctrl alone: both have Ctrl in them.
+        if ((st & CTRL) && (st & SHIFT)) {
           s.drag = PaintStore::kSize;
           s.dragMouseX = ViewerContext::mouse_x();
           s.dragSize = size_;
+        } else if (st & CTRL) {
+          s.cloneSrcX = x; s.cloneSrcY = y; s.cloneSrcPending = true;
+          s.drag = PaintStore::kNone;
+          glue->redraw();
         } else {
           s.drag = PaintStore::kStroke;
-          beginStroke(x, y);
+          s.axis = (st & SHIFT) ? PaintStore::kUndecided : PaintStore::kFree;
+          s.anchorX = x; s.anchorY = y;
+          s.anchorMouseX = ViewerContext::mouse_x();
+          s.anchorMouseY = ViewerContext::mouse_y();
+          s.strokeBegun = !(st & SHIFT);
+          if (s.strokeBegun) {
+            beginStroke(x, y);
+            s.lastX = x; s.lastY = y;
+          }
         }
         return true;
       }
       case DRAG:
         s.cursorX = x; s.cursorY = y;
         if (s.drag == PaintStore::kStroke) {
+          float px = x, py = y;
+          if (s.axis == PaintStore::kUndecided) {
+            // Judged in screen pixels, so it feels the same at any zoom: 4 px of travel,
+            // and whichever direction moved further wins - as in Photoshop.
+            const int mdx = std::abs(ViewerContext::mouse_x() - s.anchorMouseX);
+            const int mdy = std::abs(ViewerContext::mouse_y() - s.anchorMouseY);
+            if (std::max(mdx, mdy) < 4) return true;  // not decided yet: lay nothing down
+            s.axis = mdx >= mdy ? PaintStore::kHorizontal : PaintStore::kVertical;
+            // It is a drag, so this is an axis-locked stroke from where it was pressed.
+            if (!s.strokeBegun) {
+              beginStroke(s.anchorX, s.anchorY);
+              s.strokeBegun = true;
+            }
+          }
+          if (s.axis == PaintStore::kHorizontal) py = s.anchorY;
+          else if (s.axis == PaintStore::kVertical) px = s.anchorX;
           {
             const auto t0 = std::chrono::steady_clock::now();
-            const rp::IRect d = s.engine.strokeTo(x, y, pressure());
+            const rp::IRect d = s.engine.strokeTo(px, py, pressure());
+            s.lastX = px; s.lastY = py;
             dabUs_ += us(t0);
             ++moves_;
             touch(d);
@@ -2484,8 +2649,27 @@ class NPaintShop : public Iop {
         }
         return true;
       case RELEASE: {
+        if (s.drag == PaintStore::kStroke && !s.strokeBegun) {
+          // Shift+click without moving: Photoshop's straight line from where the last
+          // stroke ended to here. With no earlier stroke it is just a dab.
+          const float px = s.anchorX, py = s.anchorY;
+          if (s.haveLast) {
+            beginStroke(s.lastX, s.lastY);
+            const auto t0 = std::chrono::steady_clock::now();
+            const rp::IRect d = s.engine.strokeTo(px, py, pressure());
+            dabUs_ += us(t0);
+            ++moves_;
+            touch(d);
+          } else {
+            beginStroke(px, py);
+          }
+          s.strokeBegun = true;
+          s.lastX = px; s.lastY = py;
+        }
         const bool painted = s.drag == PaintStore::kStroke && s.engine.endStroke();
+        if (painted) s.haveLast = true;
         s.drag = PaintStore::kNone;
+        s.axis = PaintStore::kFree;
         if (painted) {
           reportStroke();
           commitHistory();
