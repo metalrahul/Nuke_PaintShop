@@ -15,6 +15,10 @@ name: Linux build
 on:
   push:
     tags: ["v*"]
+    # Every code change on main is also built for Linux, so a break shows up the day
+    # it is pushed rather than on release day. Only tags publish anything.
+    branches: [main]
+    paths: ["src/**", "tests/**", "CMakeLists.txt", ".github/workflows/linux.yml"]
   workflow_dispatch:
 
 permissions:
@@ -22,6 +26,7 @@ permissions:
 
 env:
   NUKE_VERSION: "17.0"
+  NUKE_RELEASE: "17.0v3"  # the exact Nuke build to compile against
 
 jobs:
   build:
@@ -41,10 +46,12 @@ jobs:
         env:
           NUKE_LINUX_URL: ${{ vars.NUKE_LINUX_URL }}
         run: |
+          # Foundry publishes each release under one folder on S3 (the release notes for
+          # this version live there too). The repository variable, when set, wins.
           if [ -z "$NUKE_LINUX_URL" ]; then
-            echo "::error::Set the NUKE_LINUX_URL repository variable to the Linux Nuke .tgz download link."
-            exit 1
+            NUKE_LINUX_URL="https://thefoundry.s3.amazonaws.com/products/nuke/releases/${NUKE_RELEASE}/Nuke${NUKE_RELEASE}-linux-x86_64.tgz"
           fi
+          echo "Downloading $NUKE_LINUX_URL"
           mkdir -p /tmp/nuke-dl && cd /tmp/nuke-dl
           curl -fL --retry 3 -o nuke.tgz "$NUKE_LINUX_URL"
           tar xzf nuke.tgz && rm nuke.tgz
