@@ -1167,6 +1167,123 @@ static void bench() {
   run("clone 300 px over paint", p, nullptr, flatFetch, true);
 }
 
+// Noise, wet edges and colour dynamics.
+static void testNewDynamics() {
+  auto alphaAt = [](const Canvas& c, int x, int y) { float p[4]; px(c, x, y, p); return p[3]; };
+  // Wet edges: a hard, fully covered dab settles at half strength in the middle.
+  {
+    PaintEngine e;
+    auto c = std::make_shared<Canvas>();
+    BrushParams p; p.size = 80; p.hardness = 1.0f;
+    p.dyn.wetEdges = true;
+    e.beginStroke(c, p, 200, 200, 1); e.endStroke();
+    CHECK(near(alphaAt(*c, 200, 200), 0.5f, 1e-3f));
+    p.dyn.wetEdges = false;
+    auto d = std::make_shared<Canvas>();
+    e.beginStroke(d, p, 200, 200, 1); e.endStroke();
+    CHECK(near(alphaAt(*d, 200, 200), 1.0f, 1e-4f));
+  }
+  // Noise only touches the soft part of the tip, and is the same every time.
+  {
+    BrushParams p; p.size = 200; p.hardness = 0.0f;
+    auto paint = [&](bool noise) {
+      PaintEngine e;
+      auto c = std::make_shared<Canvas>();
+      BrushParams q = p; q.dyn.noise = noise;
+      e.beginStroke(c, q, 300, 300, 1); e.endStroke();
+      return c;
+    };
+    auto a = paint(false), b = paint(true), b2 = paint(true);
+    CHECK(sameTiles(b->tiles, b2->tiles));
+    int changed = 0;
+    for (int y = 200; y < 400; ++y)
+      for (int x = 200; x < 400; ++x)
+        if (!near(alphaAt(*a, x, y), alphaAt(*b, x, y), 1e-6f)) ++changed;
+    CHECK(changed > 1000);
+    CHECK(near(alphaAt(*a, 300, 300), alphaAt(*b, 300, 300), 0.02f));  // centre barely moves
+  }
+  // Colour dynamics.
+  {
+    auto colourAt = [](const Canvas& c, int x, int y, float rgb[3]) {
+      float p[4]; px(c, x, y, p);
+      for (int k = 0; k < 3; ++k) rgb[k] = p[3] > 0 ? p[k] / p[3] : 0;
+    };
+    BrushParams p; p.size = 20; p.hardness = 1.0f; p.spacing = 0.5f;
+    p.color[0] = 1; p.color[1] = 0; p.color[2] = 0;
+    p.bgColor[0] = 0; p.bgColor[1] = 0; p.bgColor[2] = 1;
+    // fade from foreground to background over 10 dabs
+    {
+      PaintEngine e;
+      auto c = std::make_shared<Canvas>();
+      BrushParams q = p; q.dyn.fgbg.control = 1; q.dyn.fgbg.fadeSteps = 10;
+      e.beginStroke(c, q, 100, 100, 1);
+      e.strokeTo(300, 100, 1);
+      e.endStroke();
+      float s0[3], s1[3];
+      colourAt(*c, 100, 100, s0);
+      colourAt(*c, 295, 100, s1);
+      CHECK(s0[0] > 0.9f && s0[2] < 0.1f);   // starts on the foreground
+      CHECK(s1[2] > 0.9f && s1[0] < 0.1f);   // ends on the background
+    }
+    // hue jitter per tip gives different colours along the stroke; per stroke gives one
+    for (int perTip = 0; perTip < 2; ++perTip) {
+      PaintEngine e;
+      auto c = std::make_shared<Canvas>();
+      BrushParams q = p; q.dyn.hueJitter = 1.0f; q.dyn.colorPerTip = perTip != 0;
+      q.color[1] = 0.5f;
+      e.beginStroke(c, q, 100, 100, 1);
+      e.strokeTo(400, 100, 1);
+      e.endStroke();
+      float a[3], b[3];
+      colourAt(*c, 105, 100, a);
+      colourAt(*c, 395, 100, b);
+      const float diff = std::fabs(a[0] - b[0]) + std::fabs(a[1] - b[1]) + std::fabs(a[2] - b[2]);
+      if (perTip) CHECK(diff > 0.05f);
+      else CHECK(diff < 1e-3f);
+    }
+    // purity -1 greys every dab out
+    {
+      PaintEngine e;
+      auto c = std::make_shared<Canvas>();
+      BrushParams q = p; q.dyn.purity = -1.0f;
+      e.beginStroke(c, q, 100, 100, 1); e.endStroke();
+      float g[3];
+      colourAt(*c, 100, 100, g);
+      CHECK(near(g[0], g[1], 1e-4f) && near(g[1], g[2], 1e-4f));
+    }
+    // undo still restores exactly what was there, with the colour buffer in play
+    {
+      PaintEngine e;
+      auto c = std::make_shared<Canvas>();
+      e.beginStroke(c, p, 150, 150, 1); e.strokeTo(250, 150, 1); e.endStroke();
+      const TileMap before = cloneTiles(c->tiles);
+      BrushParams q = p; q.dyn.hueJitter = 0.5f; q.dyn.briJitter = 0.5f;
+      e.beginStroke(c, q, 150, 140, 1); e.strokeTo(250, 160, 1); e.endStroke();
+      CHECK(!sameTiles(before, c->tiles));
+      e.undo();
+      CHECK(sameTiles(before, c->tiles));
+    }
+  }
+  // A big hard brush over its own stroke: tiles it has saturated are skipped, and the
+  // result must match painting the same thing with a stroke that cannot skip (one
+  // whose opacity varies by a factor of exactly 1, which forces the slow path).
+  {
+    BrushParams p; p.size = 900; p.hardness = 0.9f; p.spacing = 0.05f;
+    auto paint = [&](bool forceSlow) {
+      PaintEngine e;
+      auto c = std::make_shared<Canvas>();
+      BrushParams q = p;
+      if (forceSlow) { q.dyn.opacity.control = 2; }  // pen pressure, and pressure is 1
+      e.beginStroke(c, q, 500, 500, 1);
+      for (int i = 1; i <= 20; ++i) e.strokeTo(500.0f + 40.0f * i, 500.0f + 10.0f * (i % 4), 1);
+      e.endStroke();
+      return c;
+    };
+    auto fast = paint(false), slow = paint(true);
+    CHECK(sameTiles(fast->tiles, slow->tiles));
+  }
+}
+
 int main(int argc, char** argv) {
   const std::string dir = argc > 1 ? argv[1] : ".";
   testAbr(dir);
@@ -1181,6 +1298,7 @@ int main(int argc, char** argv) {
   testPreview();
   testSampledDab();
   testPaint(dir);
+  testNewDynamics();
   std::printf("benchmark:\n");
   bench();
   if (g_quiet) { std::printf("%d premultiply checks failed\n", g_quiet); ++g_fail; }
