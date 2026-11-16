@@ -38,7 +38,13 @@ jobs:
     container: rockylinux:9
     steps:
       - name: Install build tools
-        run: dnf install -y gcc-c++ cmake make git tar gzip bzip2 xz unzip zip findutils which binutils
+        # Nuke's headers include the system's OpenGL headers (GL/gl.h, GL/glu.h), which a
+        # bare container does not have. GLU's headers are in Rocky's CRB repository.
+        run: |
+          dnf install -y dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf install -y gcc-c++ cmake make git tar gzip bzip2 xz unzip zip findutils which binutils \
+                         mesa-libGL-devel mesa-libGLU-devel
 
       - uses: actions/checkout@v4
 
