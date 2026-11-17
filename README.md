@@ -4,6 +4,10 @@ A raster paint node for Nuke. Strokes are baked into pixels as you draw, the way
 Photoshop does it, instead of being stored and re-rendered like RotoPaint. A shot with
 ten thousand strokes renders as fast as one with ten.
 
+[![NPaintShop: Photoshop-style raster painting inside Nuke (beta)](https://img.youtube.com/vi/X7fPcr2tQTo/maxresdefault.jpg)](https://www.youtube.com/watch?v=X7fPcr2tQTo)
+
+**Watch the demo:** [NPaintShop: Photoshop-style raster painting inside Nuke (beta)](https://www.youtube.com/watch?v=X7fPcr2tQTo)
+
 - Paint, erase, clone stamp and smudge, cloning across time or from a second input
 - Round brush or sampled tips loaded from Photoshop `.abr` files, with an installable
   brush library
