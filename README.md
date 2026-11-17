@@ -293,6 +293,33 @@ and smudge would bake proxy-resolution pixels permanently into full-resolution p
   faster than in earlier builds; the **last stroke** line on the Settings tab says
   whether the brush is keeping up.
 
+## Pipeline and studio notes
+
+- **Open source (MIT).** All the code is here, so a studio can review it and build it
+  themselves rather than trusting a downloaded binary (see Build from source).
+- **No network access or telemetry.** The plugin never connects to anything and never
+  runs other programs.
+- **What it reads and writes**, and nothing else:
+  - paint files (`.rpt`) in the node's paint folder, next to the script by default
+    (see Where the paint is stored). On save it also deletes leftover files of layers
+    you have deleted, and only files named `paint.L...` in that node's own folder.
+  - `.abr` brush files you point it at. **Install** copies them into
+    `~/.nuke/NPaintShop/brushes` (or `NPAINTSHOP_BRUSHES`), and **Remove** deletes them
+    from there.
+  - one presets file, `~/.nuke/NPaintShop.presets`.
+- **Environment variables** it reads: `NPAINTSHOP_BRUSHES`, `NPAINTSHOP_UNDO_MB`,
+  `NPAINTSHOP_CLONE_CACHE_MB` and `NPAINTSHOP_FRAME_MB` for paths and memory limits,
+  `NUKE_PATH` to find brush folders, and `RASTERPAINT_TRACE`, which turns on debug
+  logging to the terminal.
+- **Render farm.** Render nodes need the plugin installed and read access to the paint
+  folder, so keep scripts on a path the farm can reach rather than a local drive.
+- **No plugin dependency downstream.** Set **output** to **paint only** and write it
+  out: the result is a plain image anyone can comp, with no NPaintShop needed.
+- **Version locked.** NDK plugins only load in the Nuke version they were built for
+  (currently 17.0), so a new Nuke release needs a rebuild.
+- **Beta.** Try it on non-critical shots first, and report crashes with the
+  **details for bug reports** section from the Settings tab.
+
 ## Reporting problems
 
 Please open an issue on the [Issues](https://github.com/metalrahul/Nuke_PaintShop/issues)
