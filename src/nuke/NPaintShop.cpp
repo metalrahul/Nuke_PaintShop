@@ -1266,7 +1266,7 @@ class NPaintShop : public Iop {
     Divider(f, "about");
     Text_knob(f, "author", "Rahul Venugopal");
     Text_knob(f, "website", "<a href=\"https://www.rkvfx.com\">www.rkvfx.com</a>");
-    Text_knob(f, "build", "beta, " __DATE__);
+    Text_knob(f, "build", "1.0, " __DATE__);
     Text_knob(f, "", "<i>Built using Claude Code</i>");
 
     // Hidden plumbing: stroke_index hooks painting into Nuke's own undo (Ctrl+Z),

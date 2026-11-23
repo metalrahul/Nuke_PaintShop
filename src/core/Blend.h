@@ -87,6 +87,54 @@ inline void blendPixel(int mode, float opacity, const float* src, float* dst) {
   dst[3] = sa + ba - sa * ba;
 }
 
+// blendPixel with the mode fixed at compile time. The per-pixel switch folds away, and
+// over an empty backdrop (alpha 0) every separable mode is plain source-over, which
+// skips the divisions entirely. Gives exactly the same results as blendPixel.
+template <int M>
+inline void blendPixelT(float opacity, const float* src, float* dst) {
+  const float sa = src[3] * opacity;
+  if (sa <= 0.0f) return;
+  const float ba = dst[3];
+  if (M == kNormal || ba <= 0.0f) {
+    const float k = 1.0f - sa;
+    for (int c = 0; c < 3; ++c) dst[c] = src[c] * opacity + dst[c] * k;
+    dst[3] = sa + ba * k;
+    return;
+  }
+  const float invSa = src[3] > 0.0f ? 1.0f / src[3] : 0.0f;
+  const float invBa = 1.0f / ba;
+  for (int c = 0; c < 3; ++c) {
+    const float Cs = src[c] * opacity, Cb = dst[c];
+    const float bl = blendChannel(M, Cb * invBa, src[c] * invSa);
+    dst[c] = (1.0f - ba) * Cs + (1.0f - sa) * Cb + sa * ba * bl;
+  }
+  dst[3] = sa + ba - sa * ba;
+}
+
+template <int M> struct BlendTag { static constexpr int value = M; };
+
+// Calls f(BlendTag<mode>{}) with the mode as a compile-time constant, so a loop
+// written once runs as a separate, switch-free loop for each mode.
+template <class F>
+inline void withBlend(int mode, F&& f) {
+  switch (mode) {
+    case kMultiply: f(BlendTag<kMultiply>{}); break;
+    case kScreen: f(BlendTag<kScreen>{}); break;
+    case kOverlay: f(BlendTag<kOverlay>{}); break;
+    case kDarken: f(BlendTag<kDarken>{}); break;
+    case kLighten: f(BlendTag<kLighten>{}); break;
+    case kColorDodge: f(BlendTag<kColorDodge>{}); break;
+    case kColorBurn: f(BlendTag<kColorBurn>{}); break;
+    case kHardLight: f(BlendTag<kHardLight>{}); break;
+    case kSoftLight: f(BlendTag<kSoftLight>{}); break;
+    case kDifference: f(BlendTag<kDifference>{}); break;
+    case kExclusion: f(BlendTag<kExclusion>{}); break;
+    case kAdd: f(BlendTag<kAdd>{}); break;
+    case kSubtract: f(BlendTag<kSubtract>{}); break;
+    default: f(BlendTag<kNormal>{}); break;
+  }
+}
+
 // True for the modes that reduce to plain source-over, which can skip the
 // unpremultiply/blend/premultiply round trip entirely.
 inline bool isPassThrough(int mode) { return mode == kNormal; }

@@ -89,23 +89,16 @@ void Canvas::blendRow(int y, int x0, int x1, float* const acc[4], float opacity,
         aa[i] = sa + aa[i] * k;
       }
     } else {
-      for (int i = 0; i < n; ++i) {
-        const float sa = p[i * 4 + 3] * opacity;
-        const float ba = aa[i];
-        if (sa <= 0.0f) continue;
-        const float invSa = p[i * 4 + 3] > 0.0f ? 1.0f / p[i * 4 + 3] : 0.0f;
-        const float invBa = ba > 0.0f ? 1.0f / ba : 0.0f;
-        float* dst[3] = {ar + i, ag + i, ab_ + i};
-        for (int c = 0; c < 3; ++c) {
-          const float Cs = p[i * 4 + c] * opacity;
-          const float Cb = *dst[c];
-          const float cs = p[i * 4 + c] * invSa;  // unpremultiplied
-          const float cb = Cb * invBa;
-          const float bl = blendChannel(mode, cb, cs);
-          *dst[c] = (1.0f - ba) * Cs + (1.0f - sa) * Cb + sa * ba * bl;
+      // One loop per mode, chosen once per segment rather than per pixel.
+      withBlend(mode, [&](auto tag) {
+        constexpr int M = decltype(tag)::value;
+        for (int i = 0; i < n; ++i) {
+          if (p[i * 4 + 3] <= 0.0f) continue;
+          float d[4] = {ar[i], ag[i], ab_[i], aa[i]};
+          blendPixelT<M>(opacity, p + i * 4, d);
+          ar[i] = d[0]; ag[i] = d[1]; ab_[i] = d[2]; aa[i] = d[3];
         }
-        aa[i] = sa + ba - sa * ba;
-      }
+      });
     }
     x = segEnd;
   }
@@ -117,7 +110,10 @@ void Canvas::mergeInto(Canvas& dst, float opacity, int mode) const {
     const int tx = keyTx(kv.first), ty = keyTy(kv.first);
     Tile* d = dst.getOrCreate(tx, ty);
     const float* s = kv.second->px;
-    for (int i = 0; i < TILE_PIXELS; ++i) blendPixel(mode, opacity, s + i * 4, d->px + i * 4);
+    withBlend(mode, [&](auto tag) {
+      constexpr int M = decltype(tag)::value;
+      for (int i = 0; i < TILE_PIXELS; ++i) blendPixelT<M>(opacity, s + i * 4, d->px + i * 4);
+    });
   }
   // A blend can leave a tile empty (minus against itself, say); keep the canvas sparse.
   for (auto it = dst.tiles.begin(); it != dst.tiles.end();)

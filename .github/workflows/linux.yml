@@ -1,7 +1,7 @@
 # Builds the Linux plugin on GitHub's machines and attaches it to a release.
 #
-# Runs when you push a tag that starts with "v" (e.g. git tag v0.1.0-beta1 && git push
-# origin v0.1.0-beta1), or by hand from the Actions tab. It does not run on pull
+# Runs when you push a tag that starts with "v" (e.g. git tag v1.0.0 && git push
+# origin v1.0.0), or by hand from the Actions tab. It does not run on pull
 # requests: the build downloads Nuke, and code from strangers' forks should never run
 # with that in reach.
 #
@@ -115,12 +115,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: linux-build
-      - name: Attach to the release (created as a pre-release if it does not exist yet)
+      - name: Attach to the release (created as a draft if it does not exist yet)
+        # A draft, so the notes and the Windows zip can be added before anyone sees it.
+        # Tags with beta, alpha or rc in them are marked as pre-releases.
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           tag="${GITHUB_REF_NAME}"
+          pre=""
+          if echo "$tag" | grep -qiE 'beta|alpha|rc'; then pre="--prerelease"; fi
           gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --prerelease --title "NPaintShop $tag" --notes "Beta build."
+            gh release create "$tag" --draft $pre --title "NPaintShop $tag" --notes "NPaintShop $tag."
           gh release upload "$tag" NPaintShop-*.zip --clobber

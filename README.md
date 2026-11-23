@@ -20,7 +20,7 @@ ten thousand strokes renders as fast as one with ten.
 - A "paint only" output, so the paint can be rendered out and comped by people who do
   not have the plugin
 
-> **Beta.** Tested on Windows with Nuke 17.0v3. The Linux build is produced
+> **Version 1.0.** Tested on Windows with Nuke 17.0v3. The Linux build is produced
 > automatically and has not yet been tested inside Nuke on Linux - reports welcome.
 
 ## Requirements
@@ -36,6 +36,9 @@ comparison lists "NDK / C++ SDK Support" and "Third Party / Custom C++ node / pl
 support" as *No* for both, and the Indie FAQ states that "Custom C++ Compiled nodes will
 not work or load correctly in Nuke Indie." The licence decides this, not the installed
 build, so the same install running under a commercial licence is fine.
+
+**On Indie, use the OFX version instead** (beta): see
+[Nuke Indie: the OFX version](#nuke-indie-the-ofx-version-beta).
 
 | Licence | Can load this plugin |
 | --- | --- |
@@ -64,10 +67,13 @@ Each contains the plugin, `menu.py`, this README and the licence.
 
    ```python
    import nuke
-   nuke.menu("Nodes").addCommand("Draw/NPaintShop", "nuke.createNode('NPaintShop')")
+   if not (nuke.env.get("indie") or nuke.env.get("nc")):
+       nuke.menu("Nodes").addCommand("Draw/NPaintShop (NDK)", "nuke.createNode('NPaintShop')")
    ```
 
-5. Start Nuke. The node is under **Draw > NPaintShop**, or press Tab and type
+   (The check keeps the entry out of Nuke Indie, which cannot load the plugin.)
+
+5. Start Nuke. The node is under **Draw > NPaintShop (NDK)**, or press Tab and type
    `NPaintShop`.
 
 ### Linux
@@ -83,7 +89,7 @@ Each contains the plugin, `menu.py`, this README and the licence.
 3. **If you have no `~/.nuke/menu.py`**, copy the one from the zip. **If you already
    have one, do not overwrite it** - add the two lines shown in the Windows steps to the
    end of it.
-4. Start Nuke. The node is under **Draw > NPaintShop**, or press Tab and type
+4. Start Nuke. The node is under **Draw > NPaintShop (NDK)**, or press Tab and type
    `NPaintShop`.
 
 ### For a studio or a shared install
@@ -98,6 +104,47 @@ in any folder on `NUKE_PATH`. Brush sets placed in an `NPaintShop/brushes` folde
 - Check the plugin file is directly in `.nuke`, not in a subfolder from the zip.
 - Look in Nuke's Script Editor or terminal for a line mentioning `NPaintShop` - it
   usually says why it did not load. Please include it when reporting a problem.
+
+## Nuke Indie: the OFX version (beta)
+
+Nuke Indie cannot load NDK plugins, but it can load **OpenFX** plugins, so there is a
+second build of NPaintShop for it. It uses the same paint engine and has the same
+brushes, dynamics, layers, clone and smudge, the viewer toolbar and the shortcuts.
+
+It is a **beta**: tested on Windows with Nuke 17.0 Indie, and Linux is built
+automatically but untested. One build loads in any Nuke version that supports OpenFX.
+
+Download `NPaintShopOFX-<version>-windows.zip` or `NPaintShopOFX-<version>-linux64.zip`
+from [Releases](https://github.com/metalrahul/Nuke_PaintShop/releases), then:
+
+1. Close Nuke.
+2. Copy the `NPaintShopOFX.ofx.bundle` folder (keep it whole) into a folder of your
+   choice, e.g. `C:\Users\<your name>\.nuke\ofx` or `~/.nuke/ofx`.
+3. Set the environment variable `OFX_PLUGIN_PATH` to that folder. On Windows: Start >
+   "Edit environment variables for your account" > New. On Linux, add
+   `export OFX_PLUGIN_PATH=~/.nuke/ofx` to your shell profile.
+4. Make sure `NPaintShop.dll` / `NPaintShop.so` (the NDK plugin) is **not** in your
+   `.nuke` folder: Indie refuses to start cleanly with an NDK plugin there.
+5. Start Nuke, press Tab and type `NPaintShop`. If it does not appear, delete the
+   `ofxplugincache` file in your `.nuke` folder and restart.
+
+How it differs from the NDK version, because of what OpenFX allows:
+
+- **Live stroke.** Nuke does not render an OFX node while the pen is down, so the
+  plugin draws the stroke into the viewer itself, and Nuke's render takes over when you
+  lift the pen. Set **Settings > performance > preview colour** to match your viewer, or
+  the stroke can change shade slightly at that moment.
+- **Pen pressure** is read straight from the tablet driver (Windows Ink or Wintab) on
+  Windows. On Linux there is no pen pressure yet.
+- **Paint storage.** An OFX plugin cannot see where the script is saved, so sidecar
+  files go to `~/.nuke/NPaintShop/paint/<node id>` (or your own **paint directory**).
+  **Settings > storage > store paint** can instead keep the paint inside the `.nk`,
+  which makes the script one self-contained file.
+- **Clone from B** needs the host to give the node a second input; if yours has only
+  one, clone from A works as normal.
+
+Feedback on the OFX version is especially welcome - please include the **details for
+bug reports** lines from the Settings tab.
 
 ## Use
 
@@ -317,8 +364,9 @@ and smudge would bake proxy-resolution pixels permanently into full-resolution p
   out: the result is a plain image anyone can comp, with no NPaintShop needed.
 - **Version locked.** NDK plugins only load in the Nuke version they were built for
   (currently 17.0), so a new Nuke release needs a rebuild.
-- **Beta.** Try it on non-critical shots first, and report crashes with the
-  **details for bug reports** section from the Settings tab.
+- **Test first.** Try it on non-critical shots before a show depends on it (the OFX
+  version is still a beta), and report crashes with the **details for bug reports**
+  section from the Settings tab.
 
 ## Reporting problems
 
@@ -385,7 +433,13 @@ tests/test_library.cpp    brush library
 tests/test_overlay.cpp    overlay layout and hit-testing  (need NUKE_ROOT; build the
 tests/test_layers.cpp     layer metadata round trip        rp_test_* targets by name)
 python/menu.py            menu entry
+ofx/NPaintShopOFX.cpp     the OpenFX version (for Nuke Indie)
+ofx/PenPressure.h         tablet pressure read from Windows Ink / Wintab
+ofx/shim/DDImage/gl.h     lets the OFX build share Overlay.h (text drawing)
 ```
+
+The OFX version builds on its own and needs no Nuke install:
+`cmake -S ofx -B build-ofx && cmake --build build-ofx --config Release`.
 
 ## Licence
 
@@ -397,3 +451,6 @@ repository.
 Rahul Venugopal - [www.rkvfx.com](https://www.rkvfx.com)
 
 Built using Claude Code.
+
+The OFX version includes the OpenFX SDK's support library (BSD 3-Clause) and viewer
+text drawn from DejaVu Sans Mono; see `ofx/THIRD_PARTY_NOTICES.md`.

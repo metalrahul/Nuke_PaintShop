@@ -1,0 +1,131 @@
+# Builds the OpenFX version of NPaintShop (for Nuke Indie) on Windows and Linux.
+#
+# OpenFX plugins need no Nuke to build - the OpenFX SDK is open source and is fetched by
+# ofx/CMakeLists.txt - so both platforms are built here from scratch.
+#
+# Runs on every push to main that touches the OFX build or the shared paint engine, by
+# hand from the Actions tab, and on tags starting with "ofx-v" (e.g. ofx-v0.9.0-beta),
+# which also attach both zips to a draft release.
+
+name: OFX build
+
+on:
+  push:
+    tags: ["ofx-v*"]
+    branches: [main]
+    paths: ["ofx/**", "src/core/**", "src/nuke/Overlay.h", "src/nuke/BrushLibrary.h", ".github/workflows/ofx.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed to attach the zips to the release
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    # Rocky Linux 9 / GCC 11, as for the Nuke plugin: an older glibc than the runner's
+    # own Ubuntu, so the plugin loads on the distributions studios actually run.
+    container: rockylinux:9
+    steps:
+      - name: Install build tools
+        run: |
+          dnf install -y gcc-c++ cmake make git zip findutils binutils mesa-libGL-devel
+
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake -S ofx -B build-ofx -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-ofx -j"$(nproc)"
+
+      - name: Check the plugin loads and describes itself
+        # A tiny stand-in host: opens the plugin the way Nuke does and asks for its
+        # plugin list, so a missing symbol or a broken export fails here, not in Nuke.
+        run: |
+          cat > /tmp/load.c <<'EOF'
+          #include <dlfcn.h>
+          #include <stdio.h>
+          typedef struct { const char* pluginApi; int apiVersion; const char* pluginIdentifier; } Head;
+          int main(int argc, char** argv) {
+            void* h = dlopen(argv[1], RTLD_NOW | RTLD_LOCAL);
+            if (!h) { printf("dlopen failed: %s\n", dlerror()); return 1; }
+            int (*count)(void) = (int (*)(void))dlsym(h, "OfxGetNumberOfPlugins");
+            Head* (*get)(int) = (Head* (*)(int))dlsym(h, "OfxGetPlugin");
+            if (!count || !get) { printf("OFX entry points not exported\n"); return 1; }
+            int n = count();
+            for (int i = 0; i < n; ++i) printf("plugin %d: %s\n", i, get(i)->pluginIdentifier);
+            return n > 0 ? 0 : 1;
+          }
+          EOF
+          gcc /tmp/load.c -o /tmp/load -ldl
+          /tmp/load build-ofx/NPaintShopOFX.ofx.bundle/Contents/Linux-x86-64/NPaintShopOFX.ofx
+
+      - name: Package
+        run: |
+          case "$GITHUB_REF" in refs/tags/*) v="$GITHUB_REF_NAME" ;; *) v="dev-${GITHUB_SHA::7}" ;; esac
+          mkdir -p dist/NPaintShopOFX
+          cp -r build-ofx/NPaintShopOFX.ofx.bundle dist/NPaintShopOFX/
+          cp ofx/README.md dist/NPaintShopOFX/README.md
+          cp LICENSE ofx/THIRD_PARTY_NOTICES.md dist/NPaintShopOFX/
+          (cd dist && zip -r "NPaintShopOFX-$v-linux64.zip" NPaintShopOFX)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ofx-linux
+          path: dist/*.zip
+
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          cmake -S ofx -B build-ofx -G "Visual Studio 17 2022" -A x64
+          cmake --build build-ofx --config Release
+
+      - name: Check the plugin exports its OFX entry points
+        shell: pwsh
+        run: |
+          $dll = "build-ofx/NPaintShopOFX.ofx.bundle/Contents/Win64/NPaintShopOFX.ofx"
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC" -Recurse -Filter dumpbin.exe | Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+          $exports = & $dumpbin.FullName /exports $dll
+          $exports | Select-String "OfxGet"
+          if (-not ($exports | Select-String "OfxGetPlugin") -or -not ($exports | Select-String "OfxGetNumberOfPlugins")) {
+            Write-Error "OFX entry points are not exported"; exit 1
+          }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/*") { $v = $env:GITHUB_REF_NAME } else { $v = "dev-" + $env:GITHUB_SHA.Substring(0, 7) }
+          New-Item -ItemType Directory -Force dist/NPaintShopOFX | Out-Null
+          Copy-Item -Recurse build-ofx/NPaintShopOFX.ofx.bundle dist/NPaintShopOFX/
+          Copy-Item ofx/README.md dist/NPaintShopOFX/README.md
+          Copy-Item LICENSE, ofx/THIRD_PARTY_NOTICES.md dist/NPaintShopOFX/
+          Compress-Archive -Path dist/NPaintShopOFX -DestinationPath "dist/NPaintShopOFX-$v-windows.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ofx-windows
+          path: dist/*.zip
+
+  release:
+    needs: [linux, windows]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: zips
+          merge-multiple: true
+      - name: Attach to the release (created as a draft beta if it does not exist yet)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 || \
+            gh release create "$tag" --draft --prerelease --title "NPaintShop OFX $tag" \
+              --notes "Beta build of the OpenFX version, for Nuke Indie."
+          gh release upload "$tag" zips/*.zip --clobber

@@ -71,6 +71,15 @@ class PaintEngine {
   bool endStroke();                                  // false if the stroke changed nothing
   bool stroking() const { return bool(canvas_); }
 
+  // For a live preview drawn outside the host's render: whether the stroke in progress
+  // has touched tile `key`, and if so what was there before it (null = no tile).
+  bool strokeBefore(uint64_t key, const Tile** before) const {
+    auto it = before_.find(key);
+    if (it == before_.end()) return false;
+    *before = it->second.get();
+    return true;
+  }
+
   // Undoable "erase everything" for one canvas.
   IRect clear(std::shared_ptr<Canvas> canvas);
 

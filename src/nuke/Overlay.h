@@ -316,6 +316,9 @@ class Overlay {
     rp::BrushParams params;                       // drives the swatch
     std::vector<LayerRow> layers;                 // bottom to top, as the stack is stored
     int activeLayer = 0;
+    // Tools a host build does not have are left off the toolbar altogether. The OFX
+    // version has no clone, smudge or layers yet.
+    bool hasClone = true, hasSmudge = true, hasLayers = true;
   };
 
   // Where the pointer is, in widget pixels with the origin TOP-left exactly as
@@ -340,9 +343,12 @@ class Overlay {
     const float top = float(vh) - kMargin;
     float y = top - kBtn;
     auto put = [&](Rect& r) { r = Rect{kMargin, y, kBtn, kBtn}; y -= kBtn + kGap; };
-    put(bPaint_); put(bErase_); put(bClone_); put(bSmudge_);
+    put(bPaint_); put(bErase_);
+    if (s.hasClone) put(bClone_); else bClone_ = Rect{};
+    if (s.hasSmudge) put(bSmudge_); else bSmudge_ = Rect{};
     y -= kGap * 2.0f;
-    put(bPicker_); put(bLayers_);
+    put(bPicker_);
+    if (s.hasLayers) put(bLayers_); else bLayers_ = Rect{};
     y -= kGap * 2.0f;
     put(bUndo_); put(bRedo_);
 

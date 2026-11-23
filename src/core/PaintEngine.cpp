@@ -626,9 +626,16 @@ void PaintEngine::dabTile(const TileJob& job, float opacity, float flow) {
     const float* b = bef->px + off * 4;
     switch (p_.tool) {
       case Tool::Paint:
+        // A separate loop for each blend mode, so the mode is never re-tested per pixel.
+        withBlend(blendMode, [&](auto tag) {
+        constexpr int BM = decltype(tag)::value;
         for (int i = 0; i < n; ++i) {
           const float cv = c[i] * flow;
           if (cv <= 0.0f) continue;
+          // Already fully covered: with a fixed stroke opacity and colour (skipFull_),
+          // another dab cannot change this pixel, so it is not recomputed. Saves the
+          // most on blend modes, where each pixel is a full blend.
+          if (skipFull_ && M[i] >= 1.0f) continue;
           const float m = build(M, i, cv);
           float a = (wetEdges ? wet(m) : m) * opacity;
           if (A) { if (a > A[i]) A[i] = a; a = A[i]; }
@@ -641,7 +648,9 @@ void PaintEngine::dabTile(const TileJob& job, float opacity, float flow) {
             const float inv = m > 0.0f ? 1.0f / m : 0.0f;
             r = P[0] * inv; g = P[1] * inv; bl = P[2] * inv;
           }
-          if (blendMode == kNormal) {
+          // Over an empty pixel every blend mode is plain source-over, which is the
+          // common case for a brush laying down fresh paint.
+          if (BM == kNormal || b[i * 4 + 3] <= 0.0f) {
             const float ia = 1.0f - a;
             o[i * 4] = b[i * 4] * ia + r * a;
             o[i * 4 + 1] = b[i * 4 + 1] * ia + g * a;
@@ -652,15 +661,20 @@ void PaintEngine::dabTile(const TileJob& job, float opacity, float flow) {
             // the source alpha is the accumulated stroke alpha rather than this dab's.
             const float src[4] = {r * a, g * a, bl * a, a};
             float dst[4] = {b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]};
-            blendPixel(blendMode, 1.0f, src, dst);
+            blendPixelT<BM>(1.0f, src, dst);
             for (int ch = 0; ch < 4; ++ch) o[i * 4 + ch] = dst[ch];
           }
         }
+        });
         break;
       case Tool::Erase:
         for (int i = 0; i < n; ++i) {
           const float cv = c[i] * flow;
           if (cv <= 0.0f) continue;
+          // Already fully covered: with a fixed stroke opacity and colour (skipFull_),
+          // another dab cannot change this pixel, so it is not recomputed. Saves the
+          // most on blend modes, where each pixel is a full blend.
+          if (skipFull_ && M[i] >= 1.0f) continue;
           const float m = build(M, i, cv);
           float a = (wetEdges ? wet(m) : m) * opacity;
           if (A) { if (a > A[i]) A[i] = a; a = A[i]; }
@@ -702,7 +716,7 @@ void PaintEngine::dabTile(const TileJob& job, float opacity, float flow) {
             const float src4[4] = {s[i * 4] * a, s[i * 4 + 1] * a, s[i * 4 + 2] * a,
                                    s[i * 4 + 3] * a};
             float dst[4] = {b[i * 4], b[i * 4 + 1], b[i * 4 + 2], b[i * 4 + 3]};
-            blendPixel(blendMode, 1.0f, src4, dst);
+            withBlend(blendMode, [&](auto tag) { blendPixelT<decltype(tag)::value>(1.0f, src4, dst); });
             for (int ch = 0; ch < 4; ++ch) o[i * 4 + ch] = dst[ch];
             continue;
           }

@@ -1,5 +1,6 @@
 # Build output: compiled per machine and per Nuke version, never committed.
 build/
+build-*/
 out/
 .vs/
 CMakeUserPresets.json
@@ -14,4 +15,6 @@ CMakeUserPresets.json
 
 # Foundry's NDK headers and libraries are licensed to whoever installed Nuke and
 # must not be redistributed. The build finds them under the Nuke install.
+# (ofx/shim/DDImage is our own stand-in for the OFX build, not Foundry's, so it is kept.)
 DDImage/
+!ofx/shim/DDImage/
