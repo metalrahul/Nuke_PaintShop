@@ -27,8 +27,12 @@ jobs:
     container: rockylinux:9
     steps:
       - name: Install build tools
+        # libstdc++-static (from Rocky's CRB repository): the plugin carries its own C++
+        # runtime, so it does not depend on which one the host happens to load.
         run: |
-          dnf install -y gcc-c++ cmake make git zip findutils binutils mesa-libGL-devel
+          dnf install -y dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf install -y gcc-c++ libstdc++-static cmake make git zip findutils binutils mesa-libGL-devel
 
       - uses: actions/checkout@v4
 
