@@ -3233,7 +3233,7 @@ void NPaintShopFactory::describeInContext(ImageEffectDescriptor& desc, ContextEn
   b.beginGroup("about_group", "about", false);
   b.label("about_author", "author", "Rahul Venugopal");
   b.label("about_site", "website", "www.rkvfx.com");
-  b.label("about_build", "build", "OFX 0.9 beta, " __DATE__);
+  b.label("about_build", "build", "OFX 1.0, " __DATE__);
   b.label("about_claude", "", "Built using Claude Code");
   b.endGroup();
 
