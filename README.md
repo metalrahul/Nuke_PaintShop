@@ -432,6 +432,29 @@ Options, all optional:
 - `-DRP_USE_NUKE_CMAKE=ON` to link through Nuke's own `NukeConfig.cmake`.
 - `-DRP_OLD_ABI=ON` for Nuke 14 and older on Linux (old libstdc++ string ABI).
 
+### Other Nuke versions
+
+The release is built for Nuke 17.0, but anyone can build it for their own version from
+this source:
+
+1. Install that Nuke version. The plugin headers and libraries ship inside every Nuke
+   install, so there is nothing else to download.
+2. Use the compiler that version expects (Visual Studio 2022 or GCC 11 for Nuke 15 and
+   later; older versions need older compilers, plus `-DRP_OLD_ABI=ON` on Linux for 14
+   and older).
+3. Point `NUKE_ROOT` at it, e.g. `-DNUKE_ROOT="C:/Program Files/Nuke16.0v5"`, and build
+   as above.
+
+For Linux there is no need for a Linux machine or Nuke install: fork the repository,
+change `NUKE_RELEASE` in `.github/workflows/linux.yml` to your version, and run the
+workflow from the Actions tab. GitHub builds the plugin and keeps the zip as a download.
+
+A plugin built for one version only loads in that version (17.0 to 17.1 needs a
+rebuild; patch releases such as 17.0v3 to 17.0v4 normally do not). It has only been
+tested with Nuke 17.0, so another version may need small code changes if Foundry's
+plugin interface changed - issues and pull requests are welcome. The OFX version does
+not need any of this: one build loads in any Nuke version that supports OpenFX.
+
 The Linux release is built by `.github/workflows/linux.yml` in a Rocky Linux 9
 container. It downloads Nuke at build time from the link in the `NUKE_LINUX_URL`
 repository variable; Nuke itself is never stored in this repository.
