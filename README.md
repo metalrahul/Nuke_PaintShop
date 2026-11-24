@@ -98,6 +98,27 @@ Instead of each artist's `.nuke`, put `NPaintShop.dll` / `NPaintShop.so` and `me
 in any folder on `NUKE_PATH`. Brush sets placed in an `NPaintShop/brushes` folder on
 `NUKE_PATH` appear for everyone (see Brush library).
 
+### If you use both commercial Nuke and Indie on the same machine
+
+Indie will not start cleanly with an NDK plugin on its plugin path, so putting
+`NPaintShop.dll` straight into `.nuke` makes Indie complain even though the plugin is
+only ever meant for a commercial licence. Keep it in a subfolder instead, and add that
+folder to the path only when the licence can use it:
+
+1. Put `NPaintShop.dll` (or `NPaintShop.so`) in `.nuke/NPaintShop-ndk/` rather than
+   directly in `.nuke/`.
+2. Add this to `.nuke/init.py` (create the file if there isn't one):
+
+   ```python
+   import nuke
+   if not (nuke.env.get("indie") or nuke.env.get("nc")):
+       nuke.pluginAddPath("./NPaintShop-ndk")
+   ```
+
+Commercial Nuke loads it as before, Indie never sees it, and the OFX version can sit
+alongside for Indie to use. The `menu.py` entry is already guarded the same way, so the
+menu item follows the same rule.
+
 ### If the node does not appear
 
 - Check the Nuke version is 17.0 and the licence is commercial (see Requirements).
@@ -114,8 +135,10 @@ brushes, dynamics, layers, clone and smudge, the viewer toolbar and the shortcut
 It is a **beta**: tested on Windows with Nuke 17.0 Indie, and Linux is built
 automatically but untested. One build loads in any Nuke version that supports OpenFX.
 
-Download `NPaintShopOFX-<version>-windows.zip` or `NPaintShopOFX-<version>-linux64.zip`
-from [Releases](https://github.com/metalrahul/Nuke_PaintShop/releases), then:
+Download `NPaintShopOFX-<version>-windows.zip` from
+[Releases](https://github.com/metalrahul/Nuke_PaintShop/releases). A Linux build is
+compiled automatically on every change but is not published yet - open an issue if you
+need one. Then:
 
 1. Close Nuke.
 2. Copy the `NPaintShopOFX.ofx.bundle` folder (keep it whole) into a folder of your
